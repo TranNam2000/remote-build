@@ -224,6 +224,7 @@ fi
 cd ..
 
 echo "iOS Build completed. Collecting artifacts..."
+mkdir -p "$OUTPUT_DIR"
 IPA_PATH=""
 XCARCHIVE_PATH=""
 if command -v find >/dev/null 2>&1; then
@@ -244,6 +245,8 @@ elif [ -n "$XCARCHIVE_PATH" ] && [ -d "$XCARCHIVE_PATH" ]; then
     echo "Saved to: $OUTPUT_DIR/$XCARCHIVE_NAME"
 else
     echo "Error: No .ipa or .xcarchive found after Fastlane build!"
+    echo "IPA_PATH=$IPA_PATH"
+    echo "XCARCHIVE_PATH=$XCARCHIVE_PATH"
     exit 1
 fi
 
