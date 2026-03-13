@@ -241,7 +241,7 @@ if [ -n "$IPA_PATH" ] && [ -f "$IPA_PATH" ]; then
     echo "Saved to: $OUTPUT_DIR/Runner.ipa"
 elif [ -n "$XCARCHIVE_PATH" ] && [ -d "$XCARCHIVE_PATH" ]; then
     ARCHIVE_NAME="Runner.xcarchive.zip"
-    zip -r "$OUTPUT_DIR/$ARCHIVE_NAME" "$XCARCHIVE_PATH"
+    (cd "$(dirname "$XCARCHIVE_PATH")" && zip -r "$OUTPUT_DIR/$ARCHIVE_NAME" "$(basename "$XCARCHIVE_PATH")")
     echo "Saved to: $OUTPUT_DIR/$ARCHIVE_NAME"
 else
     echo "Error: No .ipa or .xcarchive found after Fastlane build!"
