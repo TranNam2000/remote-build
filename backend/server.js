@@ -156,12 +156,12 @@ app.post('/api/build', (req, res) => {
             if (platform === 'ios') {
                 const iosDir = path.join(builderDir, 'completed_builds', buildId);
                 const ipaPath = path.join(iosDir, 'Runner.ipa');
-                const xcarchivePath = path.join(iosDir, 'Runner.xcarchive');
+                const xcarchiveZipPath = path.join(iosDir, 'Runner.xcarchive.zip');
 
                 if (fs.existsSync(ipaPath)) {
                     fileName = 'Runner.ipa';
-                } else if (fs.existsSync(xcarchivePath)) {
-                    fileName = 'Runner.xcarchive';
+                } else if (fs.existsSync(xcarchiveZipPath)) {
+                    fileName = 'Runner.xcarchive.zip';
                 } else {
                     sendLog('Build succeeded but no downloadable artifact was found.', 'error');
                     res.end();
