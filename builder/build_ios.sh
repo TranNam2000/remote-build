@@ -14,7 +14,9 @@ echo "Cloning repository..."
 
 echo "Cleaning old temp build folders..."
 if command -v find >/dev/null 2>&1; then
-    find "$WORK_DIR_BASE" -maxdepth 1 -type d -name "flutter_build_*" -print0 2>/dev/null | xargs -0 rm -rf 2>/dev/null || true
+    CLEANUP_AGE_HOURS="${CLEANUP_AGE_HOURS:-1}"
+    CLEANUP_AGE_MIN=$((CLEANUP_AGE_HOURS * 60))
+    find "$WORK_DIR_BASE" -maxdepth 1 -type d -name "flutter_build_*" -mmin +"$CLEANUP_AGE_MIN" -print0 2>/dev/null | xargs -0 rm -rf 2>/dev/null || true
 fi
 
 mkdir -p "$WORK_DIR"
@@ -154,9 +156,16 @@ else
 fi
 
 if [ "$CACHE_DERIVED_DATA" = "1" ]; then
-    export DERIVED_DATA_PATH="${DERIVED_DATA_PATH:-/tmp/flutter_derived_data}"
+    export DERIVED_DATA_PATH="${DERIVED_DATA_PATH:-${WORK_DIR_BASE%/}/DerivedData}"
     export FASTLANE_DERIVED_DATA_PATH="$DERIVED_DATA_PATH"
     echo "Using DerivedData cache at: $DERIVED_DATA_PATH"
+fi
+
+echo "Cleaning old DerivedData..."
+rm -rf "$HOME/Library/Developer/Xcode/DerivedData" 2>/dev/null || true
+if [ -n "$DERIVED_DATA_PATH" ]; then
+    rm -rf "$DERIVED_DATA_PATH" 2>/dev/null || true
+    mkdir -p "$DERIVED_DATA_PATH"
 fi
 
 export ARCHIVE_PATH="${ARCHIVE_PATH:-$WORK_DIR/source_code/build/ios/Runner.xcarchive}"
