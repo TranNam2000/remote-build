@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Flutter Remote Builder</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🚀 Flutter Remote Builder</h1>
+            <p>Xây dựng (Build) ứng dụng Flutter Android & iOS từ xa.</p>
+        </header>
+
+        <main>
+            <div class="card build-config">
+                <h2>Cấu hình Build</h2>
+                <form id="buildForm">
+                    <div style="display: flex; gap: 15px;">
+                        <div class="form-group" style="flex: 1;">
+                            <label for="gitToken">Access Token (GitHub)</label>
+                            <div style="display: flex; gap: 10px;">
+                                <input type="password" id="gitToken" class="input-light" placeholder="ghp_xxxxxx..." style="flex: 1;">
+                                <button type="button" id="fetchReposBtn" class="btn secondary" style="width: auto; padding: 0 15px; font-size: 0.9rem;">Lấy Repos</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="form-group" id="repoSelectGroup" style="display: none;">
+                        <label for="repoSelect">Chọn Repository từ danh sách</label>
+                        <select id="repoSelect" class="input-light">
+                            <option value="">-- Chọn một repository --</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group" id="branchSelectGroup" style="display: none;">
+                        <label for="branchSelect">Chọn Branch của Repository</label>
+                        <select id="branchSelect" class="input-light">
+                            <option value="">-- Chọn một branch --</option>
+                        </select>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>Chọn Platform</label>
+                        <div class="platform-selection">
+                            <label class="platform-card active" data-platform="android">
+                                <span class="icon">🤖</span>
+                                <span>Android</span>
+                                <small>(Build qua Docker Linux)</small>
+                            </label>
+                            <label class="platform-card" data-platform="ios">
+                                <span class="icon">🍏</span>
+                                <span>iOS</span>
+                                <small>(Build trực tiếp trên macOS Host)</small>
+                            </label>
+                        </div>
+                    </div>
+
+                    <button type="submit" id="buildBtn" class="btn primary">Bắt đầu Build</button>
+                    <p class="note info">Lưu ý: Build iOS trên Docker Linux là không thể vì yêu cầu Xcode. Hệ thống sẽ build iOS trực tiếp trên môi trường macOS host của bạn.</p>
+                </form>
+            </div>
+
+            <div class="card logs-section">
+                <div class="logs-header">
+                    <h2>Live Terminal Logs</h2>
+                    <div class="badge offline" id="statusBadge">Idle</div>
+                </div>
+                <div class="terminal" id="terminal">
+                    <!-- Logs will be populated here -->
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
