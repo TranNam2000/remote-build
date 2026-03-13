@@ -5,11 +5,17 @@ REPO_URL=$1
 BRANCH=$2
 BUILD_ID=${3:-"ios_$(date +%s)"}
 LANE=${4:-${FASTLANE_LANE:-"beta"}}
-WORK_DIR="/tmp/flutter_build_$BUILD_ID"
+WORK_DIR_BASE="${WORK_DIR_BASE:-${TMPDIR:-/tmp}}"
+WORK_DIR="${WORK_DIR_BASE%/}/flutter_build_$BUILD_ID"
 OUTPUT_DIR="${PWD}/completed_builds/$BUILD_ID"
 
 echo "Starting Local macOS iOS Build..."
 echo "Cloning repository..."
+
+echo "Cleaning old temp build folders..."
+if command -v find >/dev/null 2>&1; then
+    find "$WORK_DIR_BASE" -maxdepth 1 -type d -name "flutter_build_*" -print0 2>/dev/null | xargs -0 rm -rf 2>/dev/null || true
+fi
 
 mkdir -p "$WORK_DIR"
 mkdir -p "$OUTPUT_DIR"
