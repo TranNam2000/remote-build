@@ -97,7 +97,7 @@ const startNextBuild = () => {
     }
 
     const args = [scriptPath, finalRepoUrl, next.branch || "", next.id, next.lane || ""];
-    const buildProcess = spawn('bash', args, { cwd: builderDir });
+    const buildProcess = spawn('bash', args, { cwd: builderDir, detached: true });
     next.process = buildProcess;
 
     buildProcess.stdout.on('data', (data) => addLog(next, data.toString(), 'log'));
@@ -314,6 +314,29 @@ app.get('/api/builds', (req, res) => {
     res.json({ builds: list });
 });
 
+app.get('/api/queue', (req, res) => {
+    res.json({
+        current: currentBuild ? {
+            id: currentBuild.id,
+            platform: currentBuild.platform,
+            repoUrl: currentBuild.repoUrl,
+            branch: currentBuild.branch,
+            lane: currentBuild.lane,
+            status: currentBuild.status,
+            startedAt: currentBuild.startedAt || null
+        } : null,
+        pending: buildQueue.map((b) => ({
+            id: b.id,
+            platform: b.platform,
+            repoUrl: b.repoUrl,
+            branch: b.branch,
+            lane: b.lane,
+            status: b.status,
+            createdAt: b.createdAt
+        }))
+    });
+});
+
 app.get('/api/builds/:id', (req, res) => {
     const build = builds.get(req.params.id);
     if (!build) return res.status(404).json({ error: 'Build not found' });
@@ -351,10 +374,19 @@ app.post('/api/builds/:id/cancel', (req, res) => {
 
     if (build.status === 'running' && build.process) {
         addLog(build, 'Cancel requested. Stopping build...', 'system');
-        build.process.kill('SIGTERM');
+        try {
+            // Kill the entire process group to stop any child processes (e.g., docker)
+            process.kill(-build.process.pid, 'SIGTERM');
+        } catch (e) {
+            build.process.kill('SIGTERM');
+        }
         const killTimer = setTimeout(() => {
             if (build.process && !build.process.killed) {
-                build.process.kill('SIGKILL');
+                try {
+                    process.kill(-build.process.pid, 'SIGKILL');
+                } catch (e) {
+                    build.process.kill('SIGKILL');
+                }
             }
         }, 10000);
         build.process.on('close', () => clearTimeout(killTimer));
