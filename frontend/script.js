@@ -11,7 +11,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const cancelBuildBtn = document.getElementById('cancelBuildBtn');
     const historyList = document.getElementById('historyList');
     const refreshHistoryBtn = document.getElementById('refreshHistoryBtn');
-    const currentBuildBox = document.getElementById('currentBuildBox');
     
     let selectedPlatform = 'android';
     let currentBuildId = null;
@@ -221,15 +220,14 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    const renderHistory = (builds, currentId = null) => {
+    const renderHistory = (builds) => {
         historyList.innerHTML = '';
-        const filtered = (builds || []).filter((b) => !currentId || b.id !== currentId);
-        if (filtered.length === 0) {
+        if (!builds || builds.length === 0) {
             historyList.textContent = 'Chưa có lịch sử build.';
             return;
         }
 
-        filtered.forEach((b) => {
+        builds.forEach((b) => {
             const item = document.createElement('div');
             item.className = 'history-item';
 
@@ -279,55 +277,11 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     };
 
-    const renderCurrent = (current) => {
-        if (!current) {
-            currentBuildBox.style.display = 'none';
-            currentBuildBox.innerHTML = '';
-            return;
-        }
-        currentBuildBox.style.display = 'flex';
-        currentBuildBox.innerHTML = '';
-
-        const meta = document.createElement('div');
-        meta.className = 'history-meta';
-        const title = document.createElement('div');
-        title.textContent = `Đang chạy: ${current.platform.toUpperCase()} • ${current.id}`;
-        const sub = document.createElement('div');
-        sub.textContent = `Repo: ${current.repoUrl}${current.branch ? ` | Branch: ${current.branch}` : ''}`;
-        meta.appendChild(title);
-        meta.appendChild(sub);
-
-        const actions = document.createElement('div');
-        actions.className = 'history-actions';
-        const status = document.createElement('span');
-        status.className = `status-pill status-${current.status}`;
-        status.textContent = current.status;
-        actions.appendChild(status);
-
-        const cancelBtn = document.createElement('button');
-        cancelBtn.className = 'btn secondary';
-        cancelBtn.style.width = 'auto';
-        cancelBtn.style.padding = '4px 10px';
-        cancelBtn.style.fontSize = '0.8rem';
-        cancelBtn.textContent = 'Hủy';
-        cancelBtn.addEventListener('click', async () => {
-            await fetch(`/api/builds/${current.id}/cancel`, { method: 'POST' });
-            fetchHistory();
-        });
-        actions.appendChild(cancelBtn);
-
-        currentBuildBox.appendChild(meta);
-        currentBuildBox.appendChild(actions);
-    };
-
     const fetchHistory = async () => {
         try {
-            const queueRes = await fetch('/api/queue');
-            const queueData = await queueRes.json();
-            renderCurrent(queueData.current);
             const res = await fetch('/api/builds');
             const data = await res.json();
-            renderHistory(data.builds || [], queueData.current ? queueData.current.id : null);
+            renderHistory(data.builds || []);
         } catch (e) {
             historyList.textContent = 'Không thể tải lịch sử build.';
         }
@@ -341,5 +295,5 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     fetchHistory();
-    setInterval(fetchHistory, 60000);
+    setInterval(fetchHistory, 10000);
 });
