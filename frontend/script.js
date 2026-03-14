@@ -8,12 +8,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const buildBtn = document.getElementById('buildBtn');
     const terminal = document.getElementById('terminal');
     const statusBadge = document.getElementById('statusBadge');
-    const cancelBuildBtn = document.getElementById('cancelBuildBtn');
-    const historyList = document.getElementById('historyList');
-    const refreshHistoryBtn = document.getElementById('refreshHistoryBtn');
     
     let selectedPlatform = 'android';
-    let currentBuildId = null;
 
     platformCards.forEach(card => {
         card.addEventListener('click', () => {
@@ -132,8 +128,6 @@ document.addEventListener('DOMContentLoaded', () => {
         statusBadge.className = 'badge running';
         statusBadge.textContent = 'Running';
         terminal.innerHTML = '';
-        cancelBuildBtn.disabled = false;
-        currentBuildId = null;
         
         appendLog(`Bắt đầu yêu cầu build cho ${selectedPlatform.toUpperCase()}`, 'info');
         appendLog(`Repository: ${repoUrl}`, 'info');
@@ -169,10 +163,6 @@ document.addEventListener('DOMContentLoaded', () => {
                         if (line.startsWith('data: ')) {
                             try {
                                 const data = JSON.parse(line.substring(6));
-                                if (data.buildId && !currentBuildId) {
-                                    currentBuildId = data.buildId;
-                                    appendLog(`Build ID: ${currentBuildId}`, 'system');
-                                }
                                 if (data.type === 'build_success') {
                                     const actionDiv = document.createElement('div');
                                     actionDiv.className = 'log-line log-success';
@@ -193,7 +183,6 @@ document.addEventListener('DOMContentLoaded', () => {
                                     
                                     actionDiv.appendChild(link);
                                     terminal.appendChild(actionDiv);
-                                    fetchHistory();
                                 } else {
                                     appendLog(data.message, data.type === 'log' ? 'system' : data.type);
                                 }
@@ -213,87 +202,7 @@ document.addEventListener('DOMContentLoaded', () => {
             buildBtn.textContent = 'Bắt đầu Build';
             statusBadge.className = 'badge offline';
             statusBadge.textContent = 'Idle';
-            cancelBuildBtn.disabled = true;
-            currentBuildId = null;
             appendLog('--- Kết thúc phiên ---', 'system');
-            fetchHistory();
         }
     });
-
-    const renderHistory = (builds) => {
-        historyList.innerHTML = '';
-        if (!builds || builds.length === 0) {
-            historyList.textContent = 'Chưa có lịch sử build.';
-            return;
-        }
-
-        builds.forEach((b) => {
-            const item = document.createElement('div');
-            item.className = 'history-item';
-
-            const meta = document.createElement('div');
-            meta.className = 'history-meta';
-            const title = document.createElement('div');
-            title.textContent = `${b.platform.toUpperCase()} • ${b.id}`;
-            const sub = document.createElement('div');
-            sub.textContent = `Repo: ${b.repoUrl}${b.branch ? ` | Branch: ${b.branch}` : ''}`;
-            meta.appendChild(title);
-            meta.appendChild(sub);
-
-            const actions = document.createElement('div');
-            actions.className = 'history-actions';
-            const status = document.createElement('span');
-            status.className = `status-pill status-${b.status}`;
-            status.textContent = b.status;
-            actions.appendChild(status);
-
-            if (b.downloadUrl) {
-                const link = document.createElement('a');
-                link.href = b.downloadUrl;
-                link.textContent = 'Tải xuống';
-                link.style.color = '#fff';
-                link.style.textDecoration = 'none';
-                link.style.fontWeight = '600';
-                actions.appendChild(link);
-            }
-
-            if (b.status === 'pending' || b.status === 'running') {
-                const cancelBtn = document.createElement('button');
-                cancelBtn.className = 'btn secondary';
-                cancelBtn.style.width = 'auto';
-                cancelBtn.style.padding = '4px 10px';
-                cancelBtn.style.fontSize = '0.8rem';
-                cancelBtn.textContent = 'Hủy';
-                cancelBtn.addEventListener('click', async () => {
-                    await fetch(`/api/builds/${b.id}/cancel`, { method: 'POST' });
-                    fetchHistory();
-                });
-                actions.appendChild(cancelBtn);
-            }
-
-            item.appendChild(meta);
-            item.appendChild(actions);
-            historyList.appendChild(item);
-        });
-    };
-
-    const fetchHistory = async () => {
-        try {
-            const res = await fetch('/api/builds');
-            const data = await res.json();
-            renderHistory(data.builds || []);
-        } catch (e) {
-            historyList.textContent = 'Không thể tải lịch sử build.';
-        }
-    };
-
-    refreshHistoryBtn.addEventListener('click', fetchHistory);
-    cancelBuildBtn.addEventListener('click', async () => {
-        if (!currentBuildId) return;
-        await fetch(`/api/builds/${currentBuildId}/cancel`, { method: 'POST' });
-        fetchHistory();
-    });
-
-    fetchHistory();
-    setInterval(fetchHistory, 10000);
 });

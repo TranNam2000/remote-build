@@ -6,160 +6,12 @@ const cors = require('cors');
 
 const app = express();
 const PORT = 3000;
-const HISTORY_PATH = path.join(__dirname, 'build_history.json');
 
 app.use(cors());
 app.use(express.json());
 // Serve frontend static files
 app.use(express.static(path.join(__dirname, '../frontend')));
 app.use('/builds', express.static(path.join(__dirname, '../builder/completed_builds')));
-
-const buildQueue = [];
-const builds = new Map();
-let currentBuild = null;
-
-const loadHistory = () => {
-    if (fs.existsSync(HISTORY_PATH)) {
-        try {
-            const data = JSON.parse(fs.readFileSync(HISTORY_PATH, 'utf-8'));
-            if (Array.isArray(data)) {
-                data.forEach((b) => builds.set(b.id, { ...b, logs: [], sseClients: new Set(), process: null, token: null }));
-            }
-        } catch (e) {
-            console.warn('Failed to load build history:', e.message);
-        }
-    }
-};
-
-const saveHistory = () => {
-    const snapshot = Array.from(builds.values()).map((b) => ({
-        id: b.id,
-        platform: b.platform,
-        repoUrl: b.repoUrl,
-        branch: b.branch,
-        lane: b.lane,
-        status: b.status,
-        createdAt: b.createdAt,
-        startedAt: b.startedAt || null,
-        finishedAt: b.finishedAt || null,
-        downloadUrl: b.downloadUrl || null,
-        exitCode: b.exitCode ?? null
-    }));
-    try {
-        fs.writeFileSync(HISTORY_PATH, JSON.stringify(snapshot, null, 2));
-    } catch (e) {
-        console.warn('Failed to save build history:', e.message);
-    }
-};
-
-const addLog = (build, message, type = 'info') => {
-    const entry = { ts: Date.now(), type, message };
-    build.logs.push(entry);
-    if (build.logs.length > 1000) {
-        build.logs.shift();
-    }
-    build.sseClients.forEach((client) => {
-        try {
-            client.write(`data: ${JSON.stringify({ message, type, buildId: build.id, status: build.status })}\n\n`);
-        } catch (e) {
-            // Ignore broken pipe
-        }
-    });
-};
-
-const setStatus = (build, status) => {
-    build.status = status;
-    addLog(build, `Status: ${status}`, status === 'running' ? 'info' : 'system');
-    saveHistory();
-};
-
-const startNextBuild = () => {
-    if (currentBuild || buildQueue.length === 0) return;
-    const next = buildQueue.shift();
-    currentBuild = next;
-    next.startedAt = Date.now();
-    setStatus(next, 'running');
-
-    const builderDir = path.join(__dirname, '../builder');
-    const scriptName = next.platform === 'android' ? 'build_android.sh' : 'build_ios.sh';
-    const scriptPath = path.join(builderDir, scriptName);
-
-    let finalRepoUrl = next.repoUrl;
-    if (next.token) {
-        try {
-            const urlObj = new URL(next.repoUrl);
-            urlObj.username = 'oauth2';
-            urlObj.password = next.token;
-            finalRepoUrl = urlObj.toString();
-        } catch (e) {
-            addLog(next, 'Could not parse URL to inject token, using original URL.', 'error');
-        }
-    }
-
-    const args = [scriptPath, finalRepoUrl, next.branch || "", next.id, next.lane || ""];
-    const buildProcess = spawn('bash', args, { cwd: builderDir });
-    next.process = buildProcess;
-
-    buildProcess.stdout.on('data', (data) => addLog(next, data.toString(), 'log'));
-    buildProcess.stderr.on('data', (data) => addLog(next, data.toString(), 'error'));
-
-    buildProcess.on('close', (code) => {
-        next.exitCode = code;
-        next.finishedAt = Date.now();
-        if (code === 0) {
-            let fileName = 'app-release.apk';
-            if (next.platform === 'ios') {
-                const iosDir = path.join(builderDir, 'completed_builds', next.id);
-                const ipaPath = path.join(iosDir, 'Runner.ipa');
-                const xcarchiveZipPath = path.join(iosDir, 'Runner.xcarchive.zip');
-
-                if (fs.existsSync(ipaPath)) {
-                    fileName = 'Runner.ipa';
-                } else if (fs.existsSync(xcarchiveZipPath)) {
-                    fileName = 'Runner.xcarchive.zip';
-                } else {
-                    addLog(next, 'Build succeeded but no downloadable artifact was found.', 'error');
-                    setStatus(next, 'failed');
-                    currentBuild = null;
-                    startNextBuild();
-                    return;
-                }
-            }
-            const downloadUrl = `/builds/${next.id}/${fileName}`;
-            next.downloadUrl = downloadUrl;
-            addLog(next, `Build completed successfully! 🎉`, 'success');
-            next.sseClients.forEach((client) => {
-                client.write(`data: ${JSON.stringify({ message: downloadUrl, type: 'build_success', buildId: next.id, platform: next.platform })}\n\n`);
-            });
-            setStatus(next, 'success');
-        } else {
-            if (next.status !== 'canceled') {
-                addLog(next, `Build failed with exit code ${code} ❌`, 'error');
-                setStatus(next, 'failed');
-            }
-        }
-        next.sseClients.forEach((client) => {
-            try { client.end(); } catch (e) {}
-        });
-        next.sseClients.clear();
-        currentBuild = null;
-        startNextBuild();
-    });
-
-    buildProcess.on('error', (err) => {
-        addLog(next, `Failed to start subprocess: ${err.message}`, 'error');
-        next.finishedAt = Date.now();
-        setStatus(next, 'failed');
-        next.sseClients.forEach((client) => {
-            try { client.end(); } catch (e) {}
-        });
-        next.sseClients.clear();
-        currentBuild = null;
-        startNextBuild();
-    });
-};
-
-loadHistory();
 
 app.post('/api/repos', async (req, res) => {
     const { token } = req.body;
@@ -258,112 +110,78 @@ app.post('/api/build', (req, res) => {
     res.setHeader('Connection', 'keep-alive');
     res.flushHeaders();
 
-    const buildId = `${platform}_${Date.now()}`;
-    const build = {
-        id: buildId,
-        platform,
-        repoUrl,
-        branch: branch || "",
-        lane: lane || "",
-        token: token || null,
-        status: 'pending',
-        createdAt: Date.now(),
-        logs: [],
-        sseClients: new Set(),
-        process: null
+    const sendLog = (message, type = 'info') => {
+        res.write(`data: ${JSON.stringify({ message, type })}\n\n`);
     };
-    builds.set(buildId, build);
-    saveHistory();
 
-    build.sseClients.add(res);
-    addLog(build, `Queued build for ${platform}`, 'info');
-    addLog(build, `Repository: ${repoUrl}`, 'info');
-    addLog(build, `Build ID: ${buildId}`, 'info');
+    sendLog(`Starting build process for ${platform}...`, 'info');
+    sendLog(`Repository: ${repoUrl}`, 'info');
 
-    const queuePosition = buildQueue.length + (currentBuild ? 1 : 0);
-    res.write(`data: ${JSON.stringify({ message: `Queued at position ${queuePosition}`, type: 'status', buildId, status: 'pending', queuePosition })}\n\n`);
-
-    buildQueue.push(build);
-    startNextBuild();
-
-    const keepAlive = setInterval(() => {
-        try { res.write(`data: ${JSON.stringify({ type: 'ping', buildId })}\n\n`); } catch (e) {}
-    }, 15000);
-
-    req.on('close', () => {
-        clearInterval(keepAlive);
-        build.sseClients.delete(res);
-    });
-});
-
-app.get('/api/builds', (req, res) => {
-    const list = Array.from(builds.values())
-        .sort((a, b) => b.createdAt - a.createdAt)
-        .map((b) => ({
-            id: b.id,
-            platform: b.platform,
-            repoUrl: b.repoUrl,
-            branch: b.branch,
-            lane: b.lane,
-            status: b.status,
-            createdAt: b.createdAt,
-            startedAt: b.startedAt || null,
-            finishedAt: b.finishedAt || null,
-            downloadUrl: b.downloadUrl || null
-        }));
-    res.json({ builds: list });
-});
-
-app.get('/api/builds/:id', (req, res) => {
-    const build = builds.get(req.params.id);
-    if (!build) return res.status(404).json({ error: 'Build not found' });
-    res.json({
-        id: build.id,
-        platform: build.platform,
-        repoUrl: build.repoUrl,
-        branch: build.branch,
-        lane: build.lane,
-        status: build.status,
-        createdAt: build.createdAt,
-        startedAt: build.startedAt || null,
-        finishedAt: build.finishedAt || null,
-        downloadUrl: build.downloadUrl || null,
-        logs: build.logs.slice(-200)
-    });
-});
-
-app.post('/api/builds/:id/cancel', (req, res) => {
-    const build = builds.get(req.params.id);
-    if (!build) return res.status(404).json({ error: 'Build not found' });
-    if (build.status === 'success' || build.status === 'failed' || build.status === 'canceled') {
-        return res.json({ status: build.status, message: 'Build already finished' });
+    let finalRepoUrl = repoUrl;
+    if (token) {
+        try {
+            const urlObj = new URL(repoUrl);
+            urlObj.username = 'oauth2';
+            urlObj.password = token;
+            finalRepoUrl = urlObj.toString();
+        } catch (e) {
+            sendLog('Could not parse URL to inject token, using original URL.', 'error');
+        }
     }
 
-    if (build.status === 'pending') {
-        const idx = buildQueue.findIndex((b) => b.id === build.id);
-        if (idx !== -1) buildQueue.splice(idx, 1);
-        build.finishedAt = Date.now();
-        setStatus(build, 'canceled');
-        build.sseClients.forEach((client) => { try { client.end(); } catch (e) {} });
-        build.sseClients.clear();
-        return res.json({ status: 'canceled' });
-    }
+    const buildId = `${platform}_${Date.now()}`;
+    sendLog(`Build ID: ${buildId}`, 'info');
 
-    if (build.status === 'running' && build.process) {
-        addLog(build, 'Cancel requested. Stopping build...', 'system');
-        build.process.kill('SIGTERM');
-        const killTimer = setTimeout(() => {
-            if (build.process && !build.process.killed) {
-                build.process.kill('SIGKILL');
+    // Choose the right script
+    const scriptName = platform === 'android' ? 'build_android.sh' : 'build_ios.sh';
+    const builderDir = path.join(__dirname, '../builder');
+    const scriptPath = path.join(builderDir, scriptName);
+
+    const args = [scriptPath, finalRepoUrl, branch || "", buildId, lane || ""];
+
+    // Spawn the build process
+    const buildProcess = spawn('bash', args, { cwd: builderDir });
+
+    buildProcess.stdout.on('data', (data) => {
+        sendLog(data.toString(), 'log');
+    });
+
+    buildProcess.stderr.on('data', (data) => {
+        sendLog(data.toString(), 'error');
+    });
+
+    buildProcess.on('close', (code) => {
+        if (code === 0) {
+            let fileName = 'app-release.apk';
+            if (platform === 'ios') {
+                const iosDir = path.join(builderDir, 'completed_builds', buildId);
+                const ipaPath = path.join(iosDir, 'Runner.ipa');
+                const xcarchiveZipPath = path.join(iosDir, 'Runner.xcarchive.zip');
+
+                if (fs.existsSync(ipaPath)) {
+                    fileName = 'Runner.ipa';
+                } else if (fs.existsSync(xcarchiveZipPath)) {
+                    fileName = 'Runner.xcarchive.zip';
+                } else {
+                    sendLog('Build succeeded but no downloadable artifact was found.', 'error');
+                    res.end();
+                    return;
+                }
             }
-        }, 10000);
-        build.process.on('close', () => clearTimeout(killTimer));
-        build.finishedAt = Date.now();
-        setStatus(build, 'canceled');
-        return res.json({ status: 'canceled' });
-    }
 
-    res.status(400).json({ error: 'Unable to cancel build' });
+            const downloadUrl = `/builds/${buildId}/${fileName}`;
+            sendLog(`Build completed successfully! 🎉`, 'success');
+            res.write(`data: ${JSON.stringify({ message: downloadUrl, type: 'build_success', buildId, platform })}\n\n`);
+        } else {
+            sendLog(`Build failed with exit code ${code} ❌`, 'error');
+        }
+        res.end();
+    });
+
+    buildProcess.on('error', (err) => {
+        sendLog(`Failed to start subprocess: ${err.message}`, 'error');
+        res.end();
+    });
 });
 
 app.listen(PORT, () => {
