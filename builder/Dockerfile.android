@@ -31,8 +31,11 @@ RUN mkdir -p ${ANDROID_HOME}/cmdline-tools && \
 RUN yes | sdkmanager --licenses && \
     sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
-# Install Flutter
-RUN git clone https://github.com/flutter/flutter.git -b stable ${FLUTTER_HOME} && \
+# Install Flutter (SDK tarball)
+ARG FLUTTER_VERSION=3.35.5
+RUN wget -q https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_${FLUTTER_VERSION}-stable.tar.xz -O /tmp/flutter.tar.xz && \
+    tar -xf /tmp/flutter.tar.xz -C /opt && \
+    rm /tmp/flutter.tar.xz && \
     flutter precache && \
     flutter doctor --android-licenses && \
     flutter doctor

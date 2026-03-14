@@ -218,6 +218,12 @@ select.input-light option {
     align-items: center;
 }
 
+.logs-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
 .badge {
     padding: 4px 10px;
     border-radius: 20px;
@@ -265,3 +271,47 @@ select.input-light option {
 .log-success { color: var(--success); }
 .log-error { color: var(--error); }
 .log-system { color: #b1bac4; }
+
+.history-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.history-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background-color: rgba(255,255,255,0.02);
+    gap: 12px;
+}
+
+.history-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-size: 0.85rem;
+}
+
+.history-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    white-space: nowrap;
+}
+
+.status-pill {
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    font-weight: 600;
+}
+
+.status-pending { background-color: #30363d; color: var(--text-sec); }
+.status-running { background-color: rgba(88,166,255,0.2); color: var(--primary); }
+.status-success { background-color: rgba(35,134,54,0.2); color: var(--success); }
+.status-failed { background-color: rgba(248,81,73,0.2); color: var(--error); }
+.status-canceled { background-color: rgba(139,148,158,0.2); color: var(--text-sec); }
