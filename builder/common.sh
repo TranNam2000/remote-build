@@ -1,0 +1,294 @@
+#!/bin/bash
+# builder/common.sh — Shared functions for Flutter Remote Builder
+
+# --- Auto-install prerequisites on macOS ---
+# Usage: setup_macos_prerequisites "android" | "ios"
+setup_macos_prerequisites() {
+    local platform="${1:-android}"
+    echo "==> STEP: Setup prerequisites"
+
+    # Homebrew
+    if ! command -v brew >/dev/null 2>&1; then
+        echo "📦 Installing Homebrew..."
+        /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    fi
+    eval "$(/opt/homebrew/bin/brew shellenv 2>/dev/null)" || eval "$(/usr/local/bin/brew shellenv 2>/dev/null)" || true
+    echo "✅ Homebrew"
+
+    # Java 17 (Android/Gradle)
+    if [ "$platform" = "android" ]; then
+        if ! command -v java >/dev/null 2>&1; then
+            echo "📦 Installing OpenJDK 17..."
+            brew install openjdk@17
+            sudo ln -sfn "$(brew --prefix openjdk@17)/libexec/openjdk.jdk" \
+                /Library/Java/JavaVirtualMachines/openjdk-17.jdk 2>/dev/null || true
+        fi
+        if [ -z "$JAVA_HOME" ]; then
+            local java_prefix
+            java_prefix="$(brew --prefix openjdk@17 2>/dev/null)"
+            if [ -d "$java_prefix/libexec/openjdk.jdk/Contents/Home" ]; then
+                export JAVA_HOME="$java_prefix/libexec/openjdk.jdk/Contents/Home"
+                export PATH="$JAVA_HOME/bin:$PATH"
+            fi
+        fi
+        echo "✅ Java: $(java -version 2>&1 | head -n 1)"
+    fi
+
+    # Ruby / gem
+    if ! command -v gem >/dev/null 2>&1; then
+        echo "📦 Installing Ruby..."
+        brew install ruby
+    fi
+    local brew_ruby_bin
+    brew_ruby_bin="$(brew --prefix ruby 2>/dev/null)/bin"
+    [ -d "$brew_ruby_bin" ] && export PATH="$brew_ruby_bin:$PATH"
+    echo "✅ Ruby"
+
+    # Flutter
+    if ! command -v flutter >/dev/null 2>&1; then
+        echo "📦 Installing Flutter..."
+        brew install --cask flutter
+        eval "$(/opt/homebrew/bin/brew shellenv 2>/dev/null)" || eval "$(/usr/local/bin/brew shellenv 2>/dev/null)" || true
+    fi
+    echo "✅ Flutter: $(flutter --version 2>/dev/null | head -n 1)"
+
+    # Fastlane
+    if ! command -v fastlane >/dev/null 2>&1; then
+        echo "📦 Installing Fastlane..."
+        gem install fastlane --no-document
+    fi
+    echo "✅ Fastlane"
+
+    # Android SDK
+    if [ "$platform" = "android" ]; then
+        if [ -z "$ANDROID_HOME" ] || [ ! -d "$ANDROID_HOME" ]; then
+            if [ -d "$HOME/Library/Android/sdk" ]; then
+                export ANDROID_HOME="$HOME/Library/Android/sdk"
+            else
+                echo "📦 Installing Android SDK..."
+                brew install --cask android-commandlinetools
+                export ANDROID_HOME="$HOME/Library/Android/sdk"
+                mkdir -p "$ANDROID_HOME"
+            fi
+        fi
+        export PATH="$PATH:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools"
+        if command -v sdkmanager >/dev/null 2>&1; then
+            if [ ! -d "$ANDROID_HOME/platforms/android-35" ] || [ ! -d "$ANDROID_HOME/build-tools/36.0.0" ]; then
+                echo "📦 Installing Android SDK components..."
+                yes | sdkmanager --licenses >/dev/null 2>&1 || true
+                sdkmanager "platform-tools" "platforms;android-35" "build-tools;36.0.0"
+            fi
+        fi
+        echo "✅ Android SDK: $ANDROID_HOME"
+    fi
+
+    # iOS: Xcode & CocoaPods
+    if [ "$platform" = "ios" ]; then
+        if ! command -v xcodebuild >/dev/null 2>&1; then
+            echo "⚠️  Xcode not found. Please install from App Store or run: xcode-select --install"
+        else
+            echo "✅ Xcode: $(xcodebuild -version 2>/dev/null | head -n 1)"
+        fi
+        if ! command -v pod >/dev/null 2>&1; then
+            echo "📦 Installing CocoaPods..."
+            gem install cocoapods --no-document
+        fi
+        echo "✅ CocoaPods"
+    fi
+}
+
+# --- Git clone ---
+# After calling this, PWD = $work_dir/source_code
+clone_repo() {
+    local repo_url="$1" branch="$2" work_dir="$3"
+    echo "==> STEP: Git clone"
+    mkdir -p "$work_dir"
+    cd "$work_dir"
+    if [ -n "$branch" ]; then
+        echo "Cloning branch: $branch"
+        git clone --branch "$branch" "$repo_url" source_code
+    else
+        git clone "$repo_url" source_code
+    fi
+    cd source_code
+}
+
+# --- Load .env ---
+load_env() {
+    if [ -f ".env" ]; then
+        echo "Loading .env from repository..."
+        set -a; . ./.env; set +a
+    fi
+}
+
+# --- Flutter pub get + code generation ---
+flutter_prepare() {
+    echo "==> STEP: flutter pub get"
+    flutter pub get
+
+    if grep -q "build_runner" pubspec.yaml 2>/dev/null; then
+        echo "==> STEP: build_runner"
+        flutter pub run build_runner build --delete-conflicting-outputs
+    fi
+
+    if [ -f "scripts/generate.dart" ]; then
+        echo "==> STEP: scripts/generate.dart"
+        dart run scripts/generate.dart
+    fi
+}
+
+# --- Optimize gradle.properties (Android / Apple Silicon) ---
+optimize_gradle() {
+    echo "Optimizing gradle.properties..."
+    local props="android/gradle.properties"
+    mkdir -p android
+    [ -f "$props" ] && echo "" >> "$props"
+    echo "android.aapt2FromMavenOverride=${ANDROID_HOME}/build-tools/36.0.0/aapt2" >> "$props"
+    echo "org.gradle.daemon=false" >> "$props"
+    echo "org.gradle.jvmargs=-Xmx2048m -XX:MaxMetaspaceSize=512m" >> "$props"
+    echo "org.gradle.parallel=false" >> "$props"
+    echo "org.gradle.workers.max=1" >> "$props"
+}
+
+# --- Setup Fastfile for platform ---
+# Sets global: FASTFILE_PATH
+setup_fastfile() {
+    local platform="$1" # "android" or "ios"
+    FASTFILE_PATH=""
+    local managed=0
+
+    if [ -f "${platform}/fastlane/Fastfile" ]; then
+        FASTFILE_PATH="${platform}/fastlane/Fastfile"
+    elif [ -f "${platform}/Fastfile" ]; then
+        FASTFILE_PATH="${platform}/Fastfile"
+    fi
+
+    [ -n "$FASTFILE_PATH" ] && grep -q "Codex managed Fastfile" "$FASTFILE_PATH" && managed=1
+
+    if [ -z "$FASTFILE_PATH" ] || [ "$managed" = "1" ]; then
+        echo "Generating default Fastlane config for ${platform}..."
+        mkdir -p "${platform}/fastlane"
+
+        if [ "$platform" = "android" ]; then
+            cat > "${platform}/fastlane/Fastfile" <<'EOF'
+# Codex managed Fastfile
+default_platform(:android)
+
+platform :android do
+  desc "Build release APK"
+  lane :release do
+    sh("cd .. && flutter build apk --release")
+  end
+end
+EOF
+        else
+            cat > "${platform}/fastlane/Fastfile" <<'EOF'
+# Codex managed Fastfile
+default_platform(:ios)
+
+platform :ios do
+  desc "Build and upload to TestFlight"
+  lane :beta do
+    build_args = {
+      workspace: "Runner.xcworkspace",
+      scheme: "Runner",
+      export_method: "app-store",
+      skip_package_ipa: true,
+      archive_path: ENV["ARCHIVE_PATH"] || "../build/ios/Runner.xcarchive"
+    }
+    if ENV["FASTLANE_DERIVED_DATA_PATH"] && !ENV["FASTLANE_DERIVED_DATA_PATH"].empty?
+      build_args[:derived_data_path] = ENV["FASTLANE_DERIVED_DATA_PATH"]
+    end
+    build_app(**build_args)
+    if ENV["SKIP_TESTFLIGHT"] == "1"
+      UI.important("Skipping TestFlight upload: API key info not configured.")
+    else
+      api_key = app_store_connect_api_key(
+        key_id: ENV["ASC_KEY_ID"],
+        issuer_id: ENV["ASC_ISSUER_ID"],
+        key_filepath: ENV["ASC_KEY_PATH"],
+        in_house: false
+      )
+      upload_to_testflight(
+        api_key: api_key,
+        app_identifier: ENV["APP_IDENTIFIER"],
+        skip_waiting_for_build_processing: true
+      )
+    end
+  end
+end
+EOF
+        fi
+        FASTFILE_PATH="${platform}/fastlane/Fastfile"
+    fi
+}
+
+# --- Run Fastlane ---
+run_fastlane() {
+    local platform="$1" lane="$2"
+    echo "==> STEP: Fastlane"
+    echo "🚀 Running Fastlane lane: $lane for $platform..."
+
+    cd "$platform"
+    local fastfile_flag=""
+    [ "$FASTFILE_PATH" = "${platform}/Fastfile" ] && fastfile_flag="--fastfile Fastfile"
+
+    if [ -f "Gemfile" ] && command -v bundle >/dev/null 2>&1; then
+        bundle install
+        bundle exec fastlane $fastfile_flag "$lane"
+    else
+        fastlane $fastfile_flag "$lane"
+    fi
+    cd ..
+}
+
+# --- Collect Android artifact ---
+collect_android_artifact() {
+    local output_dir="$1"
+    echo "==> STEP: Collect artifact"
+    local artifact
+    artifact=$(find build/app/outputs -name "*.apk" -o -name "*.aab" 2>/dev/null | head -n 1)
+    if [ -n "$artifact" ]; then
+        local filename
+        filename=$(basename "$artifact")
+        cp "$artifact" "$output_dir/$filename"
+        cp "$artifact" "$output_dir/app-release.apk" 2>/dev/null || true
+        echo "Saved to $output_dir/$filename"
+    else
+        echo "Error: No build artifact found!"
+        exit 1
+    fi
+}
+
+# --- Collect iOS artifact ---
+collect_ios_artifact() {
+    local output_dir="$1"
+    echo "==> STEP: Collect artifact"
+    local ipa_path xcarchive_path
+    ipa_path=$(find . -type f -name "*.ipa" -print0 2>/dev/null | xargs -0 ls -t 2>/dev/null | head -n 1)
+    xcarchive_path=$(find . -type d -name "*.xcarchive" -print0 2>/dev/null | xargs -0 ls -td 2>/dev/null | head -n 1)
+    [ -n "$ARCHIVE_PATH" ] && [ -d "$ARCHIVE_PATH" ] && xcarchive_path="$ARCHIVE_PATH"
+
+    if [ -n "$ipa_path" ] && [ -f "$ipa_path" ]; then
+        cp "$ipa_path" "$output_dir/Runner.ipa"
+        echo "Saved to: $output_dir/Runner.ipa"
+    elif [ -n "$xcarchive_path" ] && [ -d "$xcarchive_path" ]; then
+        (cd "$(dirname "$xcarchive_path")" && zip -r "$output_dir/Runner.xcarchive.zip" "$(basename "$xcarchive_path")")
+        echo "Saved to: $output_dir/Runner.xcarchive.zip"
+    else
+        echo "Error: No .ipa or .xcarchive found!"
+        exit 1
+    fi
+}
+
+# --- Cleanup ---
+cleanup_temp() {
+    [ -n "$1" ] && [ -d "$1" ] && rm -rf "$1"
+}
+
+cleanup_old_builds() {
+    local base_dir="$1" age_hours="${2:-1}"
+    echo "Cleaning old temp build folders..."
+    find "$base_dir" -maxdepth 1 -type d -name "flutter_build_*" \
+        -mmin +$((age_hours * 60)) -print0 2>/dev/null | xargs -0 rm -rf 2>/dev/null || true
+}

@@ -7,57 +7,64 @@ const cors = require('cors');
 const app = express();
 const PORT = 3000;
 
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '8793252151:AAH-P7LoLGKKo5_pPBgk9MPlmVpOKsXPSN0';
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '2019979030';
+
 app.use(cors());
 app.use(express.json());
-// Serve frontend static files
 app.use(express.static(path.join(__dirname, '../frontend')));
 app.use('/builds', express.static(path.join(__dirname, '../builder/completed_builds')));
 
+// --- GitHub API helpers ---
+
+const GITHUB_HEADERS = (token) => ({
+    'Authorization': `token ${token}`,
+    'Accept': 'application/vnd.github.v3+json',
+    'User-Agent': 'Flutter-Remote-Builder'
+});
+
+async function fetchAllGitHubPages(url, token) {
+    let allData = [];
+    let page = 1;
+
+    while (true) {
+        const response = await fetch(`${url}${url.includes('?') ? '&' : '?'}per_page=100&page=${page}`, {
+            headers: GITHUB_HEADERS(token)
+        });
+        if (!response.ok) throw new Error(`GitHub API error: ${response.statusText}`);
+        const data = await response.json();
+        if (data.length === 0) break;
+        allData = allData.concat(data);
+        if (data.length < 100) break;
+        page++;
+    }
+    return allData;
+}
+
+// --- Telegram ---
+
+function notifyTelegram(message) {
+    fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage?chat_id=${TELEGRAM_CHAT_ID}&parse_mode=Markdown&text=${encodeURIComponent(message)}`)
+        .catch(console.error);
+}
+
+// --- API Routes ---
+
 app.post('/api/repos', async (req, res) => {
     const { token } = req.body;
-    if (!token) {
-        return res.status(400).json({ error: 'Missing access token' });
-    }
+    if (!token) return res.status(400).json({ error: 'Missing access token' });
 
     try {
-        let allRepos = [];
-        let page = 1;
-        let hasMore = true;
-
-        while (hasMore) { // Fetch all pages
-            const response = await fetch(`https://api.github.com/user/repos?per_page=100&page=${page}&sort=updated&affiliation=owner,collaborator,organization_member`, {
-                headers: {
-                    'Authorization': `token ${token}`,
-                    'Accept': 'application/vnd.github.v3+json',
-                    'User-Agent': 'Flutter-Remote-Builder'
-                }
-            });
-
-            if (!response.ok) {
-                throw new Error(`GitHub API error: ${response.statusText}`);
-            }
-
-            const data = await response.json();
-            if (data.length === 0) {
-                hasMore = false;
-            } else {
-                const mapped = data.map(repo => ({
-                    name: repo.full_name,
-                    url: repo.clone_url,
-                    private: repo.private
-                }));
-                allRepos = allRepos.concat(mapped);
-
-                // If it returns less than 100, we hit the last page
-                if (data.length < 100) {
-                    hasMore = false;
-                } else {
-                    page++;
-                }
-            }
-        }
-
-        res.json({ repos: allRepos });
+        const data = await fetchAllGitHubPages(
+            'https://api.github.com/user/repos?sort=updated&affiliation=owner,collaborator,organization_member',
+            token
+        );
+        const repos = data.map(repo => ({
+            name: repo.full_name,
+            url: repo.clone_url,
+            private: repo.private
+        }));
+        res.json({ repos });
     } catch (error) {
         console.error('Fetch repos error:', error.message);
         res.status(500).json({ error: error.message });
@@ -66,45 +73,131 @@ app.post('/api/repos', async (req, res) => {
 
 app.post('/api/branches', async (req, res) => {
     const { token, repoFullName } = req.body;
-    if (!token || !repoFullName) {
-        return res.status(400).json({ error: 'Missing access token or repository name' });
-    }
+    if (!token || !repoFullName) return res.status(400).json({ error: 'Missing access token or repository name' });
 
     try {
-        const response = await fetch(`https://api.github.com/repos/${repoFullName}/branches?per_page=100`, {
-            headers: {
-                'Authorization': `token ${token}`,
-                'Accept': 'application/vnd.github.v3+json',
-                'User-Agent': 'Flutter-Remote-Builder'
-            }
-        });
-
-        if (!response.ok) {
-            throw new Error(`GitHub API error: ${response.statusText}`);
-        }
-
-        const data = await response.json();
-        const branches = data.map(branch => branch.name);
-
-        res.json({ branches });
+        const data = await fetchAllGitHubPages(
+            `https://api.github.com/repos/${repoFullName}/branches`,
+            token
+        );
+        res.json({ branches: data.map(b => b.name) });
     } catch (error) {
         console.error('Fetch branches error:', error.message);
         res.status(500).json({ error: error.message });
     }
 });
 
+// --- Build Queue ---
+
+const buildQueue = [];
+let isBuilding = false;
+
+function processQueue() {
+    if (isBuilding || buildQueue.length === 0) return;
+
+    isBuilding = true;
+    const job = buildQueue.shift();
+
+    buildQueue.forEach((qJob, index) => {
+        qJob.sendLog(`Bạn đang ở vị trí số ${index + 1} trong hàng đợi...`, 'info');
+    });
+
+    const { platform, repoUrl, branch, token, lane, res, sendLog } = job;
+
+    sendLog(`Bắt đầu tiến trình build cho ${platform}...`, 'info');
+    sendLog(`Repository: ${repoUrl}`, 'info');
+
+    // Inject token into clone URL
+    let finalRepoUrl = repoUrl;
+    if (token) {
+        try {
+            const urlObj = new URL(repoUrl);
+            urlObj.username = 'oauth2';
+            urlObj.password = token;
+            finalRepoUrl = urlObj.toString();
+        } catch (e) {
+            sendLog('Could not inject token into URL, using original.', 'error');
+        }
+    }
+
+    const buildId = `${platform}_${Date.now()}`;
+    sendLog(`Build ID: ${buildId}`, 'info');
+
+    // Choose script
+    const isWindows = process.platform === 'win32';
+    const ext = isWindows ? '.bat' : '.sh';
+    const scriptName = `build_${platform}${ext}`;
+    const builderDir = path.join(__dirname, '../builder');
+    const scriptPath = path.join(builderDir, scriptName);
+
+    // Spawn build process
+    let buildProcess;
+    const args = [finalRepoUrl, branch || "", buildId, lane || ""];
+    if (isWindows) {
+        buildProcess = spawn(scriptPath, args, { cwd: builderDir, shell: true });
+    } else {
+        buildProcess = spawn('bash', [scriptPath, ...args], { cwd: builderDir });
+    }
+
+    buildProcess.stdout.on('data', (data) => sendLog(data.toString(), 'log'));
+    buildProcess.stderr.on('data', (data) => sendLog(data.toString(), 'error'));
+
+    const finishJob = () => {
+        res.end();
+        isBuilding = false;
+        processQueue();
+    };
+
+    buildProcess.on('close', (code) => {
+        const icon = platform === 'android' ? '🤖' : '🍏';
+        const platformName = platform === 'android' ? 'Android' : 'iOS';
+
+        if (code === 0) {
+            // Detect artifact filename
+            let fileName = 'app-release.apk';
+            if (platform === 'ios') {
+                const buildDir = path.join(builderDir, 'completed_builds', buildId);
+                if (fs.existsSync(path.join(buildDir, 'Runner.ipa'))) {
+                    fileName = 'Runner.ipa';
+                } else if (fs.existsSync(path.join(buildDir, 'Runner.xcarchive.zip'))) {
+                    fileName = 'Runner.xcarchive.zip';
+                } else {
+                    sendLog('Build succeeded but no downloadable artifact was found.', 'error');
+                    finishJob();
+                    return;
+                }
+            }
+
+            const downloadUrl = `/builds/${buildId}/${fileName}`;
+            sendLog('Build completed successfully! 🎉', 'success');
+            res.write(`data: ${JSON.stringify({ message: downloadUrl, type: 'build_success', buildId, platform })}\n\n`);
+
+            notifyTelegram(
+                `✅ **Build Thành Công!**\n\n📌 **Dự án:** ${repoUrl}\n🌿 **Nhánh:** ${branch}\n${icon} **Nền tảng:** ${platformName}\n📦 **Tải xuống:** ${downloadUrl}\n⏱️ **ID:** ${buildId}`
+            );
+        } else {
+            sendLog(`Build failed with exit code ${code} ❌`, 'error');
+
+            notifyTelegram(
+                `❌ **Build Thất Bại!**\n\n📌 **Dự án:** ${repoUrl}\n🌿 **Nhánh:** ${branch}\n${icon} **Nền tảng:** ${platformName}\n⏱️ **ID:** ${buildId}\n\nXem chi tiết trên bảng điều khiển Web.`
+            );
+        }
+        finishJob();
+    });
+
+    buildProcess.on('error', (err) => {
+        sendLog(`Failed to start subprocess: ${err.message}`, 'error');
+        finishJob();
+    });
+}
+
 app.post('/api/build', (req, res) => {
     const { platform, repoUrl, branch, token, lane } = req.body;
 
-    if (!platform || !repoUrl) {
-        return res.status(400).json({ error: 'Missing platform or repoUrl' });
-    }
+    if (!platform || !repoUrl) return res.status(400).json({ error: 'Missing platform or repoUrl' });
+    if (platform !== 'android' && platform !== 'ios') return res.status(400).json({ error: 'Platform must be android or ios' });
 
-    if (platform !== 'android' && platform !== 'ios') {
-        return res.status(400).json({ error: 'Platform must be android or ios' });
-    }
-
-    // Set up Server-Sent Events for streaming logs
+    // SSE setup
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
@@ -114,74 +207,22 @@ app.post('/api/build', (req, res) => {
         res.write(`data: ${JSON.stringify({ message, type })}\n\n`);
     };
 
-    sendLog(`Starting build process for ${platform}...`, 'info');
-    sendLog(`Repository: ${repoUrl}`, 'info');
+    const job = { platform, repoUrl, branch, token, lane, res, sendLog };
 
-    let finalRepoUrl = repoUrl;
-    if (token) {
-        try {
-            const urlObj = new URL(repoUrl);
-            urlObj.username = 'oauth2';
-            urlObj.password = token;
-            finalRepoUrl = urlObj.toString();
-        } catch (e) {
-            sendLog('Could not parse URL to inject token, using original URL.', 'error');
+    req.on('close', () => {
+        const index = buildQueue.indexOf(job);
+        if (index !== -1) {
+            buildQueue.splice(index, 1);
+            console.log('Client disconnected, removed from queue.');
         }
+    });
+
+    if (isBuilding) {
+        sendLog(`Đã đưa vào hàng đợi. Vị trí: ${buildQueue.length + 1}. Vui lòng chờ...`, 'info');
     }
 
-    const buildId = `${platform}_${Date.now()}`;
-    sendLog(`Build ID: ${buildId}`, 'info');
-
-    // Choose the right script
-    const scriptName = platform === 'android' ? 'build_android.sh' : 'build_ios.sh';
-    const builderDir = path.join(__dirname, '../builder');
-    const scriptPath = path.join(builderDir, scriptName);
-
-    const args = [scriptPath, finalRepoUrl, branch || "", buildId, lane || ""];
-
-    // Spawn the build process
-    const buildProcess = spawn('bash', args, { cwd: builderDir });
-
-    buildProcess.stdout.on('data', (data) => {
-        sendLog(data.toString(), 'log');
-    });
-
-    buildProcess.stderr.on('data', (data) => {
-        sendLog(data.toString(), 'error');
-    });
-
-    buildProcess.on('close', (code) => {
-        if (code === 0) {
-            let fileName = 'app-release.apk';
-            if (platform === 'ios') {
-                const iosDir = path.join(builderDir, 'completed_builds', buildId);
-                const ipaPath = path.join(iosDir, 'Runner.ipa');
-                const xcarchiveZipPath = path.join(iosDir, 'Runner.xcarchive.zip');
-
-                if (fs.existsSync(ipaPath)) {
-                    fileName = 'Runner.ipa';
-                } else if (fs.existsSync(xcarchiveZipPath)) {
-                    fileName = 'Runner.xcarchive.zip';
-                } else {
-                    sendLog('Build succeeded but no downloadable artifact was found.', 'error');
-                    res.end();
-                    return;
-                }
-            }
-
-            const downloadUrl = `/builds/${buildId}/${fileName}`;
-            sendLog(`Build completed successfully! 🎉`, 'success');
-            res.write(`data: ${JSON.stringify({ message: downloadUrl, type: 'build_success', buildId, platform })}\n\n`);
-        } else {
-            sendLog(`Build failed with exit code ${code} ❌`, 'error');
-        }
-        res.end();
-    });
-
-    buildProcess.on('error', (err) => {
-        sendLog(`Failed to start subprocess: ${err.message}`, 'error');
-        res.end();
-    });
+    buildQueue.push(job);
+    processQueue();
 });
 
 app.listen(PORT, () => {

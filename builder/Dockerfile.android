@@ -1,10 +1,11 @@
 # builder/Dockerfile.android
+# Sử dụng platform native (mặc định sẽ là arm64 trên Mac Silicon)
 FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=UTC
 
-# Install dependencies
+# Install dependencies (Cài thêm các thư viện hỗ trợ Java/Kotlin trên ARM)
 RUN apt-get update && apt-get install -y \
     curl git unzip xz-utils zip libglu1-mesa openjdk-17-jdk \
     wget clang cmake ninja-build pkg-config libgtk-3-dev \
@@ -19,6 +20,7 @@ ENV ANDROID_HOME=/opt/android-sdk
 ENV PATH=${PATH}:${ANDROID_HOME}/cmdline-tools/latest/bin:${ANDROID_HOME}/platform-tools
 ENV FLUTTER_HOME=/opt/flutter
 ENV PATH=${PATH}:${FLUTTER_HOME}/bin
+ENV FLUTTER_NO_ANALYTICS=1
 
 # Download and install Android SDK
 RUN mkdir -p ${ANDROID_HOME}/cmdline-tools && \
@@ -27,20 +29,25 @@ RUN mkdir -p ${ANDROID_HOME}/cmdline-tools && \
     mv ${ANDROID_HOME}/cmdline-tools/cmdline-tools ${ANDROID_HOME}/cmdline-tools/latest && \
     rm cmdline-tools.zip
 
-# Accept licenses and install platform tools
+# Accept licenses and install platform tools (Dùng SDK 35/36 cho tương thích tốt ARM64)
 RUN yes | sdkmanager --licenses && \
-    sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+    sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "platforms;android-36" "build-tools;36.0.0"
 
-# Install Flutter
-RUN git clone https://github.com/flutter/flutter.git -b stable ${FLUTTER_HOME} && \
-    flutter precache && \
+# Install Flutter stable - Tự động tải engine ARM64 nếu chạy trên host ARM64
+RUN git clone --depth 1 -b stable https://github.com/flutter/flutter.git ${FLUTTER_HOME} && \
+    flutter precache --android --no-web --no-ios && \
     flutter doctor --android-licenses && \
     flutter doctor
 
 WORKDIR /app
 
-# Entry point script
+# Entry point scripts
+COPY common.sh /common.sh
 COPY run_build.sh /run_build.sh
-RUN chmod +x /run_build.sh
+RUN chmod +x /common.sh /run_build.sh
+
+# Cấu hình quan trọng tránh lỗi EINTR trên Docker Mac
+ENV JAVA_TOOL_OPTIONS="-Xmx2048m"
+ENV GRADLE_OPTS="-Dorg.gradle.daemon=false -Dorg.gradle.workers.max=1 -Dorg.gradle.parallel=false -Dkotlin.compiler.execution.strategy=in-process -Dorg.gradle.jvmargs='-Xmx2048m -XX:MaxMetaspaceSize=512m' -Dsun.zip.disableMemoryMapping=true"
 
 ENTRYPOINT ["/run_build.sh"]
