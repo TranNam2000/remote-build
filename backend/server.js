@@ -2,6 +2,7 @@ const express = require('express');
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const cors = require('cors');
 
 const app = express();
@@ -9,6 +10,20 @@ const PORT = 3000;
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '8793252151:AAH-P7LoLGKKo5_pPBgk9MPlmVpOKsXPSN0';
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '2019979030';
+
+// Auto-detect LAN IP for Telegram download links
+function getLanIP() {
+    const nets = os.networkInterfaces();
+    for (const name of Object.keys(nets)) {
+        for (const net of nets[name]) {
+            if (net.family === 'IPv4' && !net.internal) {
+                return net.address;
+            }
+        }
+    }
+    return 'localhost';
+}
+const BASE_URL = process.env.BASE_URL || `http://${getLanIP()}:${PORT}`;
 
 app.use(cors());
 app.use(express.json());
@@ -172,8 +187,9 @@ function processQueue() {
             sendLog('Build completed successfully! 🎉', 'success');
             res.write(`data: ${JSON.stringify({ message: downloadUrl, type: 'build_success', buildId, platform })}\n\n`);
 
+            const fullDownloadUrl = `${BASE_URL}${downloadUrl}`;
             notifyTelegram(
-                `✅ **Build Thành Công!**\n\n📌 **Dự án:** ${repoUrl}\n🌿 **Nhánh:** ${branch}\n${icon} **Nền tảng:** ${platformName}\n📦 **Tải xuống:** ${downloadUrl}\n⏱️ **ID:** ${buildId}`
+                `✅ **Build Thành Công!**\n\n📌 **Dự án:** ${repoUrl}\n🌿 **Nhánh:** ${branch}\n${icon} **Nền tảng:** ${platformName}\n📦 **Tải xuống:** [Download](${fullDownloadUrl})\n⏱️ **ID:** ${buildId}`
             );
         } else {
             sendLog(`Build failed with exit code ${code} ❌`, 'error');
@@ -187,6 +203,9 @@ function processQueue() {
 
     buildProcess.on('error', (err) => {
         sendLog(`Failed to start subprocess: ${err.message}`, 'error');
+        notifyTelegram(
+            `❌ **Build Lỗi!**\n\n📌 **Dự án:** ${repoUrl}\n🌿 **Nhánh:** ${branch}\n${icon} **Nền tảng:** ${platformName}\n⚠️ **Lỗi:** ${err.message}\n⏱️ **ID:** ${buildId}`
+        );
         finishJob();
     });
 }
@@ -225,6 +244,6 @@ app.post('/api/build', (req, res) => {
     processQueue();
 });
 
-app.listen(PORT, () => {
-    console.log(`Server is running at http://localhost:${PORT}`);
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server is running at ${BASE_URL}`);
 });

@@ -39,10 +39,14 @@ setup_macos_prerequisites() {
         echo "📦 Installing Ruby..."
         brew install ruby
     fi
+    # Prefer Homebrew Ruby over RVM/system Ruby to avoid gem conflicts
     local brew_ruby_bin
     brew_ruby_bin="$(brew --prefix ruby 2>/dev/null)/bin"
     [ -d "$brew_ruby_bin" ] && export PATH="$brew_ruby_bin:$PATH"
-    echo "✅ Ruby"
+    local gem_bin
+    gem_bin="$(gem environment gemdir 2>/dev/null)/bin"
+    [ -d "$gem_bin" ] && export PATH="$gem_bin:$PATH"
+    echo "✅ Ruby: $(ruby --version 2>/dev/null)"
 
     # Flutter
     if ! command -v flutter >/dev/null 2>&1; then
@@ -52,12 +56,12 @@ setup_macos_prerequisites() {
     fi
     echo "✅ Flutter: $(flutter --version 2>/dev/null | head -n 1)"
 
-    # Fastlane
-    if ! command -v fastlane >/dev/null 2>&1; then
+    # Fastlane — verify it actually runs (not just a broken RVM shim)
+    if ! fastlane --version >/dev/null 2>&1; then
         echo "📦 Installing Fastlane..."
         gem install fastlane --no-document
     fi
-    echo "✅ Fastlane"
+    echo "✅ Fastlane: $(fastlane --version 2>/dev/null | tail -n 1)"
 
     # Android SDK
     if [ "$platform" = "android" ]; then
@@ -73,10 +77,10 @@ setup_macos_prerequisites() {
         fi
         export PATH="$PATH:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools"
         if command -v sdkmanager >/dev/null 2>&1; then
-            if [ ! -d "$ANDROID_HOME/platforms/android-35" ] || [ ! -d "$ANDROID_HOME/build-tools/36.0.0" ]; then
+            if [ ! -d "$ANDROID_HOME/platforms/android-35" ]; then
                 echo "📦 Installing Android SDK components..."
                 yes | sdkmanager --licenses >/dev/null 2>&1 || true
-                sdkmanager "platform-tools" "platforms;android-35" "build-tools;36.0.0"
+                sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
             fi
         fi
         echo "✅ Android SDK: $ANDROID_HOME"
@@ -121,8 +125,28 @@ load_env() {
     fi
 }
 
+# --- Detect project type ---
+# Sets global: PROJECT_TYPE ("flutter" | "native_android" | "native_ios")
+detect_project_type() {
+    if [ -f "pubspec.yaml" ]; then
+        PROJECT_TYPE="flutter"
+    elif [ -f "build.gradle" ] || [ -f "build.gradle.kts" ] || [ -f "app/build.gradle" ] || [ -f "app/build.gradle.kts" ]; then
+        PROJECT_TYPE="native_android"
+    elif [ -f "*.xcodeproj" ] || [ -d "*.xcworkspace" ] || ls *.xcodeproj >/dev/null 2>&1; then
+        PROJECT_TYPE="native_ios"
+    else
+        PROJECT_TYPE="flutter"  # default
+    fi
+    echo "📋 Detected project type: $PROJECT_TYPE"
+}
+
 # --- Flutter pub get + code generation ---
 flutter_prepare() {
+    if [ "$PROJECT_TYPE" != "flutter" ]; then
+        echo "==> SKIP: flutter_prepare (not a Flutter project)"
+        return 0
+    fi
+
     echo "==> STEP: flutter pub get"
     flutter pub get
 
@@ -140,14 +164,62 @@ flutter_prepare() {
 # --- Optimize gradle.properties (Android / Apple Silicon) ---
 optimize_gradle() {
     echo "Optimizing gradle.properties..."
-    local props="android/gradle.properties"
-    mkdir -p android
+    local props
+    if [ "$PROJECT_TYPE" = "native_android" ]; then
+        props="gradle.properties"
+    else
+        props="android/gradle.properties"
+        mkdir -p android
+    fi
     [ -f "$props" ] && echo "" >> "$props"
-    echo "android.aapt2FromMavenOverride=${ANDROID_HOME}/build-tools/36.0.0/aapt2" >> "$props"
-    echo "org.gradle.daemon=false" >> "$props"
-    echo "org.gradle.jvmargs=-Xmx2048m -XX:MaxMetaspaceSize=512m" >> "$props"
-    echo "org.gradle.parallel=false" >> "$props"
-    echo "org.gradle.workers.max=1" >> "$props"
+
+    # Find the latest aapt2 binary from installed build-tools
+    local aapt2_path=""
+    if [ -n "$ANDROID_HOME" ] && [ -d "$ANDROID_HOME/build-tools" ]; then
+        aapt2_path=$(find "$ANDROID_HOME/build-tools" -name "aapt2" -type f 2>/dev/null | sort -V | tail -n 1)
+    fi
+    # If no aapt2 found, install latest build-tools via sdkmanager
+    if [ -z "$aapt2_path" ] && command -v sdkmanager >/dev/null 2>&1; then
+        echo "📦 No aapt2 found. Installing latest build-tools..."
+        local latest_bt
+        latest_bt=$(sdkmanager --list 2>/dev/null | grep "build-tools;" | tail -n 1 | awk '{print $1}')
+        if [ -n "$latest_bt" ]; then
+            yes | sdkmanager "$latest_bt" >/dev/null 2>&1 || true
+            aapt2_path=$(find "$ANDROID_HOME/build-tools" -name "aapt2" -type f 2>/dev/null | sort -V | tail -n 1)
+        fi
+    fi
+    if [ -n "$aapt2_path" ]; then
+        echo "Using aapt2: $aapt2_path"
+        echo "android.aapt2FromMavenOverride=$aapt2_path" >> "$props"
+    else
+        echo "⚠️  No aapt2 found. Build may fail."
+    fi
+
+    # Kill stale Gradle daemons to free memory
+    if command -v gradle >/dev/null 2>&1; then
+        gradle --stop 2>/dev/null || true
+    fi
+    pkill -f "GradleDaemon" 2>/dev/null || true
+    echo "🧹 Killed stale Gradle daemons"
+
+    # Detect available RAM and allocate ~50% (min 4G for R8/minify)
+    local jvm_max="4096m"
+    if command -v sysctl >/dev/null 2>&1; then
+        local total_mb
+        total_mb=$(( $(sysctl -n hw.memsize 2>/dev/null || echo 0) / 1048576 ))
+        if [ "$total_mb" -gt 0 ]; then
+            local half_mb=$(( total_mb / 2 ))
+            [ "$half_mb" -lt 4096 ] && half_mb=4096
+            jvm_max="${half_mb}m"
+        fi
+    fi
+    echo "JVM heap: $jvm_max (total RAM: ${total_mb:-unknown}MB)"
+
+    echo "org.gradle.daemon=true" >> "$props"
+    echo "org.gradle.jvmargs=-Xmx${jvm_max} -XX:MaxMetaspaceSize=512m -XX:+HeapDumpOnOutOfMemoryError" >> "$props"
+    echo "org.gradle.parallel=true" >> "$props"
+    echo "org.gradle.caching=true" >> "$props"
+    echo "android.enableR8.fullMode=false" >> "$props"
 }
 
 # --- Setup Fastfile for platform ---
@@ -157,27 +229,62 @@ setup_fastfile() {
     FASTFILE_PATH=""
     local managed=0
 
-    if [ -f "${platform}/fastlane/Fastfile" ]; then
-        FASTFILE_PATH="${platform}/fastlane/Fastfile"
-    elif [ -f "${platform}/Fastfile" ]; then
-        FASTFILE_PATH="${platform}/Fastfile"
+    # For native Android, Fastfile lives at root level (fastlane/Fastfile)
+    # For Flutter, it lives at android/fastlane/Fastfile or ios/fastlane/Fastfile
+    local search_dir="$platform"
+    [ "$PROJECT_TYPE" = "native_android" ] && search_dir="."
+
+    if [ -f "${search_dir}/fastlane/Fastfile" ]; then
+        FASTFILE_PATH="${search_dir}/fastlane/Fastfile"
+    elif [ -f "${search_dir}/Fastfile" ]; then
+        FASTFILE_PATH="${search_dir}/Fastfile"
     fi
 
     [ -n "$FASTFILE_PATH" ] && grep -q "Codex managed Fastfile" "$FASTFILE_PATH" && managed=1
 
     if [ -z "$FASTFILE_PATH" ] || [ "$managed" = "1" ]; then
-        echo "Generating default Fastlane config for ${platform}..."
-        mkdir -p "${platform}/fastlane"
+        local target_dir="$platform"
+        [ "$PROJECT_TYPE" = "native_android" ] && target_dir="."
+        echo "Generating default Fastlane config for ${platform} (${PROJECT_TYPE})..."
+        mkdir -p "${target_dir}/fastlane"
 
-        if [ "$platform" = "android" ]; then
+        if [ "$platform" = "android" ] && [ "$PROJECT_TYPE" = "native_android" ]; then
+            # Native Android — use gradle directly
+            cat > "${target_dir}/fastlane/Fastfile" <<'NEOF'
+# Codex managed Fastfile — Native Android
+default_platform(:android)
+
+platform :android do
+  desc "Build release APK (native Android)"
+  lane :release do
+    gradle(
+      task: "assembleRelease"
+    )
+  end
+
+  desc "Build release AAB (native Android)"
+  lane :bundle do
+    gradle(
+      task: "bundleRelease"
+    )
+  end
+end
+NEOF
+        elif [ "$platform" = "android" ]; then
+            # Flutter Android
             cat > "${platform}/fastlane/Fastfile" <<'EOF'
-# Codex managed Fastfile
+# Codex managed Fastfile — Flutter Android
 default_platform(:android)
 
 platform :android do
   desc "Build release APK"
   lane :release do
     sh("cd .. && flutter build apk --release")
+  end
+
+  desc "Build release AAB"
+  lane :bundle do
+    sh("cd .. && flutter build appbundle --release")
   end
 end
 EOF
@@ -219,7 +326,7 @@ platform :ios do
 end
 EOF
         fi
-        FASTFILE_PATH="${platform}/fastlane/Fastfile"
+        FASTFILE_PATH="${target_dir}/fastlane/Fastfile"
     fi
 }
 
@@ -227,11 +334,15 @@ EOF
 run_fastlane() {
     local platform="$1" lane="$2"
     echo "==> STEP: Fastlane"
-    echo "🚀 Running Fastlane lane: $lane for $platform..."
+    echo "🚀 Running Fastlane lane: $lane for $platform ($PROJECT_TYPE)..."
 
-    cd "$platform"
+    # For native Android, fastlane is at root; for Flutter, inside platform dir
+    local run_dir="$platform"
+    [ "$PROJECT_TYPE" = "native_android" ] && run_dir="."
+
+    cd "$run_dir"
     local fastfile_flag=""
-    [ "$FASTFILE_PATH" = "${platform}/Fastfile" ] && fastfile_flag="--fastfile Fastfile"
+    [ "$FASTFILE_PATH" = "${run_dir}/Fastfile" ] && fastfile_flag="--fastfile Fastfile"
 
     if [ -f "Gemfile" ] && command -v bundle >/dev/null 2>&1; then
         bundle install
@@ -239,15 +350,21 @@ run_fastlane() {
     else
         fastlane $fastfile_flag "$lane"
     fi
-    cd ..
+    [ "$run_dir" != "." ] && cd ..
 }
 
 # --- Collect Android artifact ---
 collect_android_artifact() {
     local output_dir="$1"
     echo "==> STEP: Collect artifact"
-    local artifact
-    artifact=$(find build/app/outputs -name "*.apk" -o -name "*.aab" 2>/dev/null | head -n 1)
+    local artifact=""
+    if [ "$PROJECT_TYPE" = "native_android" ]; then
+        # Native Android: APK in app/build/outputs/
+        artifact=$(find . -path "*/build/outputs/*" \( -name "*.apk" -o -name "*.aab" \) ! -name "*debug*" 2>/dev/null | head -n 1)
+    else
+        # Flutter: APK in build/app/outputs/
+        artifact=$(find build/app/outputs -name "*.apk" -o -name "*.aab" 2>/dev/null | head -n 1)
+    fi
     if [ -n "$artifact" ]; then
         local filename
         filename=$(basename "$artifact")
