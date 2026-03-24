@@ -120,15 +120,22 @@ document.addEventListener('DOMContentLoaded', () => {
     const platformSelect = document.getElementById('platformSelect');
     const buildTypeGroup = document.getElementById('buildTypeGroup');
     const buildTypeSelect = document.getElementById('buildTypeSelect');
+    const flavorGroup = document.getElementById('flavorGroup');
+    const flavorSelect = document.getElementById('flavorSelect');
     let detectedProjectType = null;
+    let detectedFlavors = [];
     let isMacOS = false;
 
-    // Show/hide build type when platform changes
+    // Show/hide build type and flavor when platform changes
     platformSelect.addEventListener('change', () => {
         if (platformSelect.value === 'android') {
             buildTypeGroup.style.display = 'block';
+            if (detectedFlavors.length > 0) {
+                flavorGroup.style.display = 'block';
+            }
         } else {
             buildTypeGroup.style.display = 'none';
+            flavorGroup.style.display = 'none';
         }
     });
 
@@ -140,18 +147,29 @@ document.addEventListener('DOMContentLoaded', () => {
 
             branchSelectGroup.style.display = 'none';
             branchSelect.innerHTML = '<option value="">-- Chọn một branch --</option>';
+            flavorGroup.style.display = 'none';
+            detectedFlavors = [];
 
             if (token && repoFullName) {
                 try {
-                    appendLog(`Đang tải danh sách nhánh (branches) cho ${repoFullName}...`, 'info');
-                    const res = await fetch('/api/branches', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ token, repoFullName })
-                    });
+                    // Fetch branches and detect project type in parallel
+                    appendLog(`Đang tải branches và phát hiện loại project...`, 'info');
 
-                    if (res.ok) {
-                        const data = await res.json();
+                    const [branchRes, detectRes] = await Promise.all([
+                        fetch('/api/branches', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ token, repoFullName })
+                        }),
+                        fetch('/api/detect', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ repoUrl: e.target.value, branch: '' })
+                        })
+                    ]);
+
+                    if (branchRes.ok) {
+                        const data = await branchRes.json();
                         if (data.branches && data.branches.length > 0) {
                             data.branches.forEach(branch => {
                                 const opt = document.createElement('option');
@@ -164,6 +182,30 @@ document.addEventListener('DOMContentLoaded', () => {
                         }
                     } else {
                         throw new Error('Không thể tải branch');
+                    }
+
+                    if (detectRes.ok) {
+                        const detectData = await detectRes.json();
+                        detectedProjectType = detectData.projectType;
+                        isMacOS = detectData.isMac;
+                        detectedFlavors = detectData.flavors || [];
+
+                        appendLog(`📋 Project Type: ${detectedProjectType}`, 'success');
+
+                        if (detectedFlavors.length > 0) {
+                            appendLog(`🎨 Flavors detected: ${detectedFlavors.join(', ')}`, 'success');
+                            flavorSelect.innerHTML = '';
+                            detectedFlavors.forEach(f => {
+                                const opt = document.createElement('option');
+                                opt.value = f;
+                                opt.textContent = f;
+                                flavorSelect.appendChild(opt);
+                            });
+                            // Show flavor dropdown if Android is selected
+                            if (platformSelect.value === 'android') {
+                                flavorGroup.style.display = 'block';
+                            }
+                        }
                     }
                 } catch(err) {
                     appendLog(`Lỗi: ${err.message}`, 'error');
@@ -190,9 +232,10 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        // Get build type for Android
+        // Get build type and flavor for Android
         const lane = (platform === 'android') ? (buildTypeSelect.value === 'aab' ? 'bundle' : 'release') : '';
         const buildTypeLabel = (platform === 'android') ? (buildTypeSelect.value === 'aab' ? 'AAB' : 'APK') : '';
+        const flavor = (platform === 'android' && detectedFlavors.length > 0) ? flavorSelect.value : '';
 
         buildBtn.disabled = true;
         buildBtn.textContent = 'Đang Build...';
@@ -203,7 +246,7 @@ document.addEventListener('DOMContentLoaded', () => {
         appendLog(`Bắt đầu yêu cầu build`, 'info');
         appendLog(`Repository: ${repoUrl}`, 'info');
         if (branch) appendLog(`Branch: ${branch}`, 'info');
-        appendLog(`Platform: ${platform.toUpperCase()}${buildTypeLabel ? ' (' + buildTypeLabel + ')' : ''}`, 'info');
+        appendLog(`Platform: ${platform.toUpperCase()}${buildTypeLabel ? ' (' + buildTypeLabel + ')' : ''}${flavor ? ' [' + flavor + ']' : ''}`, 'info');
 
         try {
             const response = await fetch('/api/build', {
@@ -211,7 +254,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 headers: {
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify({ repoUrl, branch, token, platform, lane })
+                body: JSON.stringify({ repoUrl, branch, token, platform, lane, flavor })
             });
 
             if (!response.ok) {

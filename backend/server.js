@@ -112,15 +112,15 @@ app.post('/api/detect', async (req, res) => {
     if (!repoUrl) return res.status(400).json({ error: 'Missing repoUrl' });
 
     try {
-        const projectType = await detectProjectType(repoUrl, branch);
+        const { projectType, flavors } = await detectProjectType(repoUrl, branch);
         const isMac = process.platform === 'darwin';
         const canBuildIos = isMac;
 
         res.json({
             projectType: projectType || 'unknown',
+            flavors,
             isMac,
             canBuildIos,
-            // If Flutter on Mac, show platform selection; otherwise auto-selected
             needsPlatformSelection: projectType === 'flutter' && isMac
         });
     } catch (error) {
@@ -146,6 +146,40 @@ app.post('/api/branches', async (req, res) => {
 
 // --- Project Type Detection ---
 
+function parseFlavors(sourceDir) {
+    // Search for productFlavors in build.gradle files
+    const gradleFiles = [
+        path.join(sourceDir, 'app/build.gradle'),
+        path.join(sourceDir, 'app/build.gradle.kts'),
+        path.join(sourceDir, 'android/app/build.gradle'),
+        path.join(sourceDir, 'android/app/build.gradle.kts'),
+    ];
+
+    for (const gFile of gradleFiles) {
+        if (!fs.existsSync(gFile)) continue;
+        const content = fs.readFileSync(gFile, 'utf8');
+
+        // Match productFlavors block and extract flavor names
+        const match = content.match(/productFlavors\s*\{([\s\S]*?)\n\s{4}\}/);
+        if (!match) continue;
+
+        const block = match[1];
+        // Groovy: flavorName { ... }  or  Kts: create("flavorName") { ... }
+        const flavors = [];
+        const groovyMatches = block.matchAll(/^\s{8}(\w+)\s*\{/gm);
+        for (const m of groovyMatches) {
+            flavors.push(m[1]);
+        }
+        const ktsMatches = block.matchAll(/create\("(\w+)"\)/g);
+        for (const m of ktsMatches) {
+            flavors.push(m[1]);
+        }
+
+        if (flavors.length > 0) return flavors;
+    }
+    return [];
+}
+
 async function detectProjectType(repoUrl, branch) {
     const tempDir = path.join(os.tmpdir(), `detect_${Date.now()}`);
     try {
@@ -153,6 +187,9 @@ async function detectProjectType(repoUrl, branch) {
         const cloneArgs = ['clone', '--depth', '1'];
         if (branch) cloneArgs.push('--branch', branch);
         cloneArgs.push(repoUrl, 'source');
+
+        // Ensure temp dir exists
+        fs.mkdirSync(tempDir, { recursive: true });
 
         const cloneProc = spawn('git', cloneArgs, {
             cwd: tempDir,
@@ -168,23 +205,31 @@ async function detectProjectType(repoUrl, branch) {
         });
 
         const sourceDir = path.join(tempDir, 'source');
+        let projectType = null;
+        let flavors = [];
 
         // Check for project type
         if (fs.existsSync(path.join(sourceDir, 'pubspec.yaml'))) {
-            return 'flutter'; // Flutter project
+            projectType = 'flutter';
         } else if (fs.existsSync(path.join(sourceDir, 'build.gradle')) ||
                    fs.existsSync(path.join(sourceDir, 'build.gradle.kts')) ||
                    fs.existsSync(path.join(sourceDir, 'app/build.gradle')) ||
                    fs.existsSync(path.join(sourceDir, 'app/build.gradle.kts'))) {
-            return 'android'; // Native Android
+            projectType = 'android';
         } else if (fs.existsSync(path.join(sourceDir, 'ios/Runner.xcodeproj')) ||
                    fs.existsSync(path.join(sourceDir, 'ios/Runner.xcworkspace'))) {
-            return 'ios'; // iOS project
+            projectType = 'ios';
         }
-        return null; // Unknown
+
+        // Parse flavors for Android/Flutter projects
+        if (projectType === 'flutter' || projectType === 'android') {
+            flavors = parseFlavors(sourceDir);
+        }
+
+        return { projectType, flavors };
     } catch (error) {
         console.error('Detection error:', error.message);
-        return null;
+        return { projectType: null, flavors: [] };
     } finally {
         // Cleanup temp dir
         try {
@@ -215,7 +260,7 @@ function processQueue() {
 }
 
 async function startBuild(job) {
-    const { repoUrl, branch, token, lane, res, sendLog } = job;
+    const { repoUrl, branch, token, lane, flavor, res, sendLog } = job;
     let { platform } = job;
 
     sendLog(`Bắt đầu tiến trình build...`, 'info');
@@ -225,12 +270,12 @@ async function startBuild(job) {
     // If platform not specified, auto-detect
     if (!platform) {
         sendLog(`Đang phát hiện loại project...`, 'info');
-        let detectedType = await detectProjectType(repoUrl, branch);
-        if (!detectedType) {
+        const detected = await detectProjectType(repoUrl, branch);
+        if (!detected.projectType) {
             sendLog(`Không thể phát hiện loại project, mặc định Android`, 'warn');
             platform = 'android';
         } else {
-            platform = detectedType === 'flutter' ? 'android' : detectedType;
+            platform = detected.projectType === 'flutter' ? 'android' : detected.projectType;
         }
     }
 
@@ -273,7 +318,7 @@ async function startBuild(job) {
     const scriptPath = path.join(builderDir, scriptName);
 
     let buildProcess;
-    const args = [finalRepoUrl, branch || "", buildId, lane || ""];
+    const args = [finalRepoUrl, branch || "", buildId, lane || "", flavor || ""];
     if (isWindows) {
         buildProcess = spawn('powershell.exe', [
             '-ExecutionPolicy', 'Bypass', '-File', scriptPath, ...args
@@ -417,7 +462,7 @@ app.post('/api/cancel', (req, res) => {
 });
 
 app.post('/api/build', (req, res) => {
-    const { repoUrl, branch, token, lane, platform } = req.body;
+    const { repoUrl, branch, token, lane, platform, flavor } = req.body;
 
     if (!repoUrl) return res.status(400).json({ error: 'Missing repoUrl' });
     if (platform && platform !== 'android' && platform !== 'ios') {
@@ -435,7 +480,7 @@ app.post('/api/build', (req, res) => {
     };
 
     const queueId = `q_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-    const job = { queueId, platform: platform || null, repoUrl, branch, token, lane, res, sendLog };
+    const job = { queueId, platform: platform || null, repoUrl, branch, token, lane, flavor, res, sendLog };
 
     req.on('close', () => {
         const index = buildQueue.indexOf(job);

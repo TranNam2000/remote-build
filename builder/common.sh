@@ -118,6 +118,8 @@ clone_repo() {
     echo "==> STEP: Git clone"
     mkdir -p "$work_dir"
     cd "$work_dir"
+    # Clear old source if exists
+    rm -rf source_code 2>/dev/null || true
     if [ -n "$branch" ]; then
         echo "Cloning branch: $branch"
         git clone --branch "$branch" "$repo_url" source_code
@@ -269,42 +271,48 @@ setup_fastfile() {
         mkdir -p "${target_dir}/fastlane"
 
         if [ "$platform" = "android" ] && [ "$PROJECT_TYPE" = "native_android" ]; then
-            # Native Android — use gradle directly
-            cat > "${target_dir}/fastlane/Fastfile" <<'NEOF'
+            # Native Android — use gradle directly with flavor from FLAVOR env
+            local flavor_cap=""
+            if [ -n "$FLAVOR" ]; then
+                flavor_cap="$(echo "${FLAVOR:0:1}" | tr '[:lower:]' '[:upper:]')${FLAVOR:1}"
+            fi
+            cat > "${target_dir}/fastlane/Fastfile" <<NEOF
 # Codex managed Fastfile — Native Android
 default_platform(:android)
 
 platform :android do
-  desc "Build release APK (native Android)"
+  desc "Build APK (native Android)"
   lane :release do
     gradle(
-      task: "assembleRelease"
+      task: "assemble${flavor_cap}Release"
     )
   end
 
-  desc "Build release AAB (native Android)"
+  desc "Build AAB (native Android)"
   lane :bundle do
     gradle(
-      task: "bundleRelease"
+      task: "bundle${flavor_cap}Release"
     )
   end
 end
 NEOF
         elif [ "$platform" = "android" ]; then
-            # Flutter Android
-            cat > "${platform}/fastlane/Fastfile" <<'EOF'
+            # Flutter Android with flavor from FLAVOR env
+            local flavor_flag=""
+            [ -n "$FLAVOR" ] && flavor_flag=" --flavor $FLAVOR"
+            cat > "${platform}/fastlane/Fastfile" <<EOF
 # Codex managed Fastfile — Flutter Android
 default_platform(:android)
 
 platform :android do
-  desc "Build release APK"
+  desc "Build APK"
   lane :release do
-    sh("cd .. && flutter build apk --release")
+    sh("cd .. && flutter build apk --release${flavor_flag}")
   end
 
-  desc "Build release AAB"
+  desc "Build AAB"
   lane :bundle do
-    sh("cd .. && flutter build appbundle --release")
+    sh("cd .. && flutter build appbundle --release${flavor_flag}")
   end
 end
 EOF

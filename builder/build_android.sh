@@ -5,6 +5,7 @@ REPO_URL=$1
 BRANCH=$2
 BUILD_ID=${3:-"android_$(date +%s)"}
 LANE=${4:-release}
+FLAVOR=${5:-""}
 BUILDER_DIR="$PWD"
 WORK_DIR="/tmp/flutter_build_$BUILD_ID"
 OUTPUT_DIR="${BUILDER_DIR}/completed_builds/$BUILD_ID"
@@ -31,6 +32,9 @@ load_env
 install_required_sdk
 optimize_gradle
 flutter_prepare        # auto-skips if native
+
+export FLAVOR
+echo "🎨 Flavor: ${FLAVOR:-"(none)"}"
 setup_fastfile "android"
 
 set +e
