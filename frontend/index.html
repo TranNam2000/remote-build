@@ -48,11 +48,18 @@
                             <option value="">-- Chọn một platform --</option>
                             <option value="android">🤖 Android</option>
                             <option value="ios">🍏 iOS</option>
-                            <option value="both">🔄 Cả Android + iOS</option>
                         </select>
                     </div>
 
-                    <p class="note info">ℹ️ Loại platform sẽ được tự động phát hiện từ repository. Nếu Flutter trên macOS, bạn có thể chọn build cho cả Android và iOS.</p>
+                    <div class="form-group" id="buildTypeGroup" style="display: none;">
+                        <label for="buildTypeSelect">Loại Build Android</label>
+                        <select id="buildTypeSelect" class="input-light">
+                            <option value="apk">📦 APK (cài trực tiếp)</option>
+                            <option value="aab">📦 AAB (Google Play)</option>
+                        </select>
+                    </div>
+
+                    <p class="note info">ℹ️ Loại platform sẽ được tự động phát hiện từ repository. Nếu Flutter trên macOS, bạn có thể chọn build cho Android hoặc iOS.</p>
 
                     <button type="submit" id="buildBtn" class="btn primary">Bắt đầu Build</button>
                     <p class="note info">Lưu ý: Build iOS trên Docker Linux là không thể vì yêu cầu Xcode. Hệ thống sẽ build iOS trực tiếp trên môi trường macOS host của bạn.</p>

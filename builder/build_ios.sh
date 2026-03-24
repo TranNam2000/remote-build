@@ -17,10 +17,24 @@ echo "Build ID: $BUILD_ID"
 cleanup_old_builds "$WORK_DIR_BASE" "${CLEANUP_AGE_HOURS:-1}"
 mkdir -p "$OUTPUT_DIR"
 
-setup_macos_prerequisites "ios"
+# Clone first to detect project type
 clone_repo "$REPO_URL" "$BRANCH" "$WORK_DIR"
+detect_project_type
 load_env
-flutter_prepare
+
+# Setup prerequisites based on detected type
+if [ "$PROJECT_TYPE" = "flutter" ]; then
+    echo "📋 Flutter iOS project"
+    setup_macos_prerequisites "ios"
+    flutter_prepare
+elif [ "$PROJECT_TYPE" = "native_ios" ]; then
+    echo "📋 Native iOS project (Swift/Obj-C)"
+    setup_macos_prerequisites "ios"
+    # No flutter_prepare needed
+else
+    echo "📋 Project type: $PROJECT_TYPE — building as iOS"
+    setup_macos_prerequisites "ios"
+fi
 
 # --- iOS-specific: detect bundle id ---
 APP_IDENTIFIER=$(grep -m 1 "PRODUCT_BUNDLE_IDENTIFIER" ios/Runner.xcodeproj/project.pbxproj 2>/dev/null \
@@ -61,6 +75,7 @@ fi
 
 # --- CocoaPods ---
 cd ios
+set +e
 if command -v pod >/dev/null 2>&1; then
     export COCOAPODS_DISABLE_STATS=1
     if [ "$FORCE_POD_REPO_UPDATE" = "1" ]; then
@@ -82,11 +97,15 @@ if command -v pod >/dev/null 2>&1; then
         fi
     fi
 fi
+set -e
 cd ..
 
 # --- Fastlane build ---
 setup_fastfile "ios"
+set +e
 run_fastlane "ios" "$LANE"
+FASTLANE_EXIT=$?
+set -e
 
 # --- Collect artifact ---
 collect_ios_artifact "$OUTPUT_DIR"

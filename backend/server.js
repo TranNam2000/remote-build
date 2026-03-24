@@ -188,7 +188,11 @@ async function detectProjectType(repoUrl, branch) {
     } finally {
         // Cleanup temp dir
         try {
-            require('child_process').execSync(`rm -rf "${tempDir}"`, { stdio: 'ignore' });
+            if (process.platform === 'win32') {
+                require('child_process').execSync(`rmdir /s /q "${tempDir}"`, { stdio: 'ignore' });
+            } else {
+                require('child_process').execSync(`rm -rf "${tempDir}"`, { stdio: 'ignore' });
+            }
         } catch {}
     }
 }
@@ -263,7 +267,7 @@ async function startBuild(job) {
     sendLog(`Build ID: ${buildId}`, 'info');
 
     const isWindows = process.platform === 'win32';
-    const ext = isWindows ? '.bat' : '.sh';
+    const ext = isWindows ? '.ps1' : '.sh';
     const scriptName = `build_${platform}${ext}`;
     const builderDir = path.join(__dirname, '../builder');
     const scriptPath = path.join(builderDir, scriptName);
@@ -271,7 +275,9 @@ async function startBuild(job) {
     let buildProcess;
     const args = [finalRepoUrl, branch || "", buildId, lane || ""];
     if (isWindows) {
-        buildProcess = spawn(scriptPath, args, { cwd: builderDir, shell: true });
+        buildProcess = spawn('powershell.exe', [
+            '-ExecutionPolicy', 'Bypass', '-File', scriptPath, ...args
+        ], { cwd: builderDir });
     } else {
         buildProcess = spawn('bash', [scriptPath, ...args], { cwd: builderDir, detached: true });
     }
@@ -292,27 +298,40 @@ async function startBuild(job) {
         const platformName = platform === 'android' ? 'Android' : 'iOS';
 
         if (code === 0) {
-            let fileName = 'app-release.apk';
-            if (platform === 'ios') {
-                const buildDir = path.join(builderDir, 'completed_builds', buildId);
+            let fileName = null;
+            const buildDir = path.join(builderDir, 'completed_builds', buildId);
+
+            if (platform === 'android') {
+                // Check for AAB first (bundle lane), then APK
+                const aabFile = fs.readdirSync(buildDir).find(f => f.endsWith('.aab'));
+                const apkFile = fs.readdirSync(buildDir).find(f => f.endsWith('.apk'));
+                fileName = aabFile || apkFile;
+            } else if (platform === 'ios') {
                 if (fs.existsSync(path.join(buildDir, 'Runner.ipa'))) {
                     fileName = 'Runner.ipa';
                 } else if (fs.existsSync(path.join(buildDir, 'Runner.xcarchive.zip'))) {
                     fileName = 'Runner.xcarchive.zip';
-                } else {
-                    sendLog('Build succeeded but no downloadable artifact was found.', 'error');
-                    finishJob();
-                    return;
                 }
+            }
+
+            if (!fileName) {
+                sendLog('Build succeeded but no downloadable artifact was found.', 'error');
+                finishJob();
+                return;
             }
 
             const downloadUrl = `/builds/${buildId}/${fileName}`;
             sendLog('Build completed successfully! 🎉', 'success');
             res.write(`data: ${JSON.stringify({ message: downloadUrl, type: 'build_success', buildId, platform })}\n\n`);
 
-            const fullDownloadUrl = `${BASE_URL}${downloadUrl}`;
+            const lanUrl = `http://${getLanIP()}:${PORT}${downloadUrl}`;
+            const publicIP = BASE_URL.match(/\d+\.\d+\.\d+\.\d+/)?.[0];
+            const publicUrl = publicIP ? `http://${publicIP}:${PORT}${downloadUrl}` : null;
+            const downloadLinks = publicUrl && publicUrl !== lanUrl
+                ? `🏠 [LAN](${lanUrl})\n🌍 [Public](${publicUrl})`
+                : `📦 [Download](${lanUrl})`;
             notifyTelegram(
-                `✅ **Build Thành Công!**\n\n📌 **Dự án:** ${repoUrl}\n🌿 **Nhánh:** ${branch}\n${icon} **Nền tảng:** ${platformName}\n📦 **Tải xuống:** [Download](${fullDownloadUrl})\n⏱️ **ID:** ${buildId}`
+                `✅ **Build Thành Công!**\n\n📌 **Dự án:** ${repoUrl}\n🌿 **Nhánh:** ${branch}\n${icon} **Nền tảng:** ${platformName}\n${downloadLinks}\n⏱️ **ID:** ${buildId}`
             );
         } else if (code !== null) {
             sendLog(`Build failed with exit code ${code} ❌`, 'error');
@@ -401,7 +420,7 @@ app.post('/api/build', (req, res) => {
     const { repoUrl, branch, token, lane, platform } = req.body;
 
     if (!repoUrl) return res.status(400).json({ error: 'Missing repoUrl' });
-    if (platform && platform !== 'android' && platform !== 'ios' && platform !== 'both') {
+    if (platform && platform !== 'android' && platform !== 'ios') {
         return res.status(400).json({ error: 'Invalid platform' });
     }
 
@@ -415,31 +434,22 @@ app.post('/api/build', (req, res) => {
         res.write(`data: ${JSON.stringify({ message, type })}\n\n`);
     };
 
-    // Handle "both" platform for Flutter on macOS
-    let platforms = platform === 'both' ? ['android', 'ios'] : [platform || null];
+    const queueId = `q_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const job = { queueId, platform: platform || null, repoUrl, branch, token, lane, res, sendLog };
 
-    // Queue builds for each platform
-    platforms.forEach((plt, index) => {
-        const queueId = `q_${Date.now()}_${Math.random().toString(36).slice(2, 6)}_${index}`;
-        const job = { queueId, platform: plt, repoUrl, branch, token, lane, res, sendLog };
-
-        req.on('close', () => {
-            const idx = buildQueue.indexOf(job);
-            if (idx !== -1) {
-                buildQueue.splice(idx, 1);
-                console.log('Client disconnected, removed from queue.');
-            }
-        });
-
-        if (activeBuilds.size >= MAX_CONCURRENT) {
-            if (index === 0) {
-                sendLog(`Đã đưa vào hàng đợi. Vị trí: ${buildQueue.length + 1}. Đang chạy ${activeBuilds.size}/${MAX_CONCURRENT} builds.`, 'info');
-            }
+    req.on('close', () => {
+        const index = buildQueue.indexOf(job);
+        if (index !== -1) {
+            buildQueue.splice(index, 1);
+            console.log('Client disconnected, removed from queue.');
         }
-
-        buildQueue.push(job);
     });
 
+    if (activeBuilds.size >= MAX_CONCURRENT) {
+        sendLog(`Đã đưa vào hàng đợi. Vị trí: ${buildQueue.length + 1}. Đang chạy ${activeBuilds.size}/${MAX_CONCURRENT} builds.`, 'info');
+    }
+
+    buildQueue.push(job);
     processQueue();
 });
 

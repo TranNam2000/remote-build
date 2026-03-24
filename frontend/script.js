@@ -103,7 +103,9 @@ document.addEventListener('DOMContentLoaded', () => {
             });
 
             repoSelectGroup.style.display = 'block';
+            platformSelectGroup.style.display = 'block';  // Show platform selection after repos load
             appendLog(`Đã tải thành công ${data.repos.length} repositories từ GitHub.`, 'success');
+            appendLog(`📱 Chọn platform build trước, rồi chọn repository.`, 'info');
         } catch (error) {
             alert(`Lỗi khi tải repos: ${error.message}`);
         } finally {
@@ -116,8 +118,19 @@ document.addEventListener('DOMContentLoaded', () => {
     const branchSelect = document.getElementById('branchSelect');
     const platformSelectGroup = document.getElementById('platformSelectGroup');
     const platformSelect = document.getElementById('platformSelect');
+    const buildTypeGroup = document.getElementById('buildTypeGroup');
+    const buildTypeSelect = document.getElementById('buildTypeSelect');
     let detectedProjectType = null;
     let isMacOS = false;
+
+    // Show/hide build type when platform changes
+    platformSelect.addEventListener('change', () => {
+        if (platformSelect.value === 'android') {
+            buildTypeGroup.style.display = 'block';
+        } else {
+            buildTypeGroup.style.display = 'none';
+        }
+    });
 
     repoSelect.addEventListener('change', async (e) => {
         if (e.target.value) {
@@ -127,31 +140,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
             branchSelectGroup.style.display = 'none';
             branchSelect.innerHTML = '<option value="">-- Chọn một branch --</option>';
-            platformSelectGroup.style.display = 'none';
 
             if (token && repoFullName) {
                 try {
-                    appendLog(`Đang phát hiện loại project...`, 'info');
-                    const detectRes = await fetch('/api/detect', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ repoUrl: e.target.value, branch: '' })
-                    });
-
-                    if (detectRes.ok) {
-                        const detectData = await detectRes.json();
-                        detectedProjectType = detectData.projectType;
-                        isMacOS = detectData.isMac;
-
-                        appendLog(`📋 Project Type: ${detectedProjectType}`, 'success');
-
-                        // Show platform selection only for Flutter on macOS
-                        if (detectData.needsPlatformSelection) {
-                            platformSelectGroup.style.display = 'block';
-                            appendLog(`✅ Mac detected - bạn có thể build cho Android, iOS, hoặc cả hai`, 'info');
-                        }
-                    }
-
                     appendLog(`Đang tải danh sách nhánh (branches) cho ${repoFullName}...`, 'info');
                     const res = await fetch('/api/branches', {
                         method: 'POST',
@@ -192,21 +183,16 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        // Determine platform to build
-        let platform = null;
-        if (platformSelectGroup.style.display !== 'none') {
-            platform = platformSelect.value;
-            if (!platform) {
-                alert('Vui lòng chọn platform (Android/iOS/Both)');
-                return;
-            }
-        } else {
-            // Auto-select based on detected type
-            if (detectedProjectType === 'flutter') platform = 'android';
-            else if (detectedProjectType === 'android') platform = 'android';
-            else if (detectedProjectType === 'ios') platform = 'ios';
-            else platform = 'android'; // default
+        // Get platform choice
+        const platform = platformSelect.value;
+        if (!platform) {
+            alert('Vui lòng chọn platform (Android hoặc iOS)');
+            return;
         }
+
+        // Get build type for Android
+        const lane = (platform === 'android') ? (buildTypeSelect.value === 'aab' ? 'bundle' : 'release') : '';
+        const buildTypeLabel = (platform === 'android') ? (buildTypeSelect.value === 'aab' ? 'AAB' : 'APK') : '';
 
         buildBtn.disabled = true;
         buildBtn.textContent = 'Đang Build...';
@@ -217,7 +203,7 @@ document.addEventListener('DOMContentLoaded', () => {
         appendLog(`Bắt đầu yêu cầu build`, 'info');
         appendLog(`Repository: ${repoUrl}`, 'info');
         if (branch) appendLog(`Branch: ${branch}`, 'info');
-        appendLog(`Platform: ${platform === 'both' ? 'Android + iOS' : platform.toUpperCase()}`, 'info');
+        appendLog(`Platform: ${platform.toUpperCase()}${buildTypeLabel ? ' (' + buildTypeLabel + ')' : ''}`, 'info');
 
         try {
             const response = await fetch('/api/build', {
@@ -225,7 +211,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 headers: {
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify({ repoUrl, branch, token, platform })
+                body: JSON.stringify({ repoUrl, branch, token, platform, lane })
             });
 
             if (!response.ok) {

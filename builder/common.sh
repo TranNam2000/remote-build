@@ -1,6 +1,10 @@
 #!/bin/bash
 # builder/common.sh — Shared functions for Flutter Remote Builder
 
+# Fix locale for CocoaPods, Fastlane, Ruby
+export LC_ALL=en_US.UTF-8
+export LANG=en_US.UTF-8
+
 # --- Auto-install prerequisites on macOS ---
 # Usage: setup_macos_prerequisites "android" | "ios"
 setup_macos_prerequisites() {
@@ -48,8 +52,8 @@ setup_macos_prerequisites() {
     [ -d "$gem_bin" ] && export PATH="$gem_bin:$PATH"
     echo "✅ Ruby: $(ruby --version 2>/dev/null)"
 
-    # Flutter (only if needed for this project)
-    if [ "$platform" = "flutter" ] || [ "$PROJECT_TYPE" = "flutter" ]; then
+    # Flutter (only if project uses Flutter)
+    if [ "$PROJECT_TYPE" = "flutter" ]; then
         if ! command -v flutter >/dev/null 2>&1; then
             echo "📦 Installing Flutter..."
             brew install --cask flutter
@@ -57,7 +61,7 @@ setup_macos_prerequisites() {
         fi
         echo "✅ Flutter: $(flutter --version 2>/dev/null | head -n 1)"
     else
-        echo "⊘ Skipping Flutter (native Android project)"
+        echo "⊘ Skipping Flutter (native project)"
     fi
 
     # Fastlane — verify it actually runs (not just a broken RVM shim)
@@ -81,10 +85,12 @@ setup_macos_prerequisites() {
         fi
         export PATH="$PATH:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools"
         if command -v sdkmanager >/dev/null 2>&1; then
-            if [ ! -d "$ANDROID_HOME/platforms/android-35" ]; then
-                echo "📦 Installing Android SDK components..."
-                yes | sdkmanager --licenses >/dev/null 2>&1 || true
-                sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+            echo "📦 Checking Android SDK components..."
+            yes | sdkmanager --licenses >/dev/null 2>&1 || true
+            sdkmanager "platform-tools" 2>/dev/null || true
+            # Auto-install build-tools if no aapt2 found
+            if [ -z "$(find "$ANDROID_HOME/build-tools" -name "aapt2" 2>/dev/null)" ]; then
+                sdkmanager "build-tools;36.0.0" 2>/dev/null || true
             fi
         fi
         echo "✅ Android SDK: $ANDROID_HOME"
@@ -119,6 +125,9 @@ clone_repo() {
         git clone "$repo_url" source_code
     fi
     cd source_code
+    # Fix executable permissions (gradlew, etc.)
+    chmod +x gradlew 2>/dev/null || true
+    chmod +x android/gradlew 2>/dev/null || true
 }
 
 # --- Load .env ---
@@ -165,6 +174,32 @@ flutter_prepare() {
     fi
 }
 
+# --- Auto-install required Android SDK from project ---
+install_required_sdk() {
+    if ! command -v sdkmanager >/dev/null 2>&1 || [ -z "$ANDROID_HOME" ]; then
+        return 0
+    fi
+
+    echo "📦 Checking required SDK platforms..."
+
+    # Only scan compileSdk — that's what actually needs to be installed
+    local sdk_versions
+    sdk_versions=$(find . -name "build.gradle" -o -name "build.gradle.kts" 2>/dev/null \
+        | xargs grep -hE 'compileSdk|compileSdkVersion' 2>/dev/null \
+        | grep -oE '[0-9]+' | sort -un)
+
+    for ver in $sdk_versions; do
+        [ "$ver" -lt 21 ] 2>/dev/null && continue
+        if [ ! -d "$ANDROID_HOME/platforms/android-$ver" ]; then
+            echo "📦 Installing platforms;android-$ver (required by project)..."
+            yes | sdkmanager "platforms;android-$ver" 2>/dev/null || true
+        else
+            echo "✅ platforms;android-$ver already installed"
+        fi
+    done
+}
+
+
 # --- Optimize gradle.properties (Android / Apple Silicon) ---
 optimize_gradle() {
     echo "Optimizing gradle.properties..."
@@ -199,41 +234,12 @@ optimize_gradle() {
         echo "⚠️  No aapt2 found. Build may fail."
     fi
 
-    # Aggressively kill stale Gradle daemons to free memory
-    echo "🧹 Cleaning Gradle daemons..."
-    if command -v gradle >/dev/null 2>&1; then
-        gradle --stop 2>/dev/null || true
-    fi
-    pkill -9 -f "GradleDaemon" 2>/dev/null || true
-    pkill -9 -f "java.*gradle" 2>/dev/null || true
-    sleep 2  # Wait for processes to fully die
-    echo "✅ Gradle daemons cleaned"
-
-    # Detect available RAM and allocate conservatively (40% max, min 2GB)
-    local jvm_max="2048m"
-    local total_mb=0
-    if command -v sysctl >/dev/null 2>&1; then
-        total_mb=$(( $(sysctl -n hw.memsize 2>/dev/null || echo 0) / 1048576 ))
-    fi
-
-    if [ "$total_mb" -gt 0 ]; then
-        # Reserve 1GB for system, allocate 40% of remaining
-        local available_mb=$(( total_mb - 1024 ))
-        [ "$available_mb" -lt 2048 ] && available_mb=2048
-        local heap_mb=$(( available_mb * 40 / 100 ))
-        [ "$heap_mb" -lt 2048 ] && heap_mb=2048
-        [ "$heap_mb" -gt 6144 ] && heap_mb=6144  # Cap at 6GB to avoid daemon crashes
-        jvm_max="${heap_mb}m"
-    fi
-    echo "JVM heap: $jvm_max (total RAM: ${total_mb}MB)"
 
     echo "org.gradle.daemon=true" >> "$props"
-    echo "org.gradle.jvmargs=-Xmx${jvm_max} -XX:MaxMetaspaceSize=256m -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -XX:+HeapDumpOnOutOfMemoryError" >> "$props"
     echo "org.gradle.parallel=false" >> "$props"
     echo "org.gradle.caching=false" >> "$props"
     echo "org.gradle.workers.max=2" >> "$props"
     echo "android.enableR8.fullMode=false" >> "$props"
-    echo "android.dexOptions.incremental=true" >> "$props"
 }
 
 # --- Setup Fastfile for platform ---
@@ -383,7 +389,6 @@ collect_android_artifact() {
         local filename
         filename=$(basename "$artifact")
         cp "$artifact" "$output_dir/$filename"
-        cp "$artifact" "$output_dir/app-release.apk" 2>/dev/null || true
         echo "Saved to $output_dir/$filename"
     else
         echo "Error: No build artifact found!"

@@ -28,10 +28,17 @@ else
     setup_macos_prerequisites "android"
 fi
 load_env
+install_required_sdk
 optimize_gradle
 flutter_prepare        # auto-skips if native
 setup_fastfile "android"
+
+set +e
 run_fastlane "android" "$LANE"
+FASTLANE_EXIT=$?
+set -e
+
+# Fastlane may exit 1 due to locale warning even on success — check artifact instead
 collect_android_artifact "$OUTPUT_DIR"
 
 cleanup_temp "$WORK_DIR"
