@@ -8,7 +8,8 @@
       "Bash(curl -s --connect-timeout 5 -o /dev/null -w \"%{http_code}\" http://20.118.209.231:80)",
       "Bash(curl -s --connect-timeout 5 -o /dev/null -w \"HTTP %{http_code}\" http://20.118.209.231:3000)",
       "Bash(curl -s --connect-timeout 5 https://api.github.com)",
-      "Bash(curl -s http://localhost:3000)"
+      "Bash(curl -s http://localhost:3000)",
+      "Bash(curl -s http://localhost:3000/api/tasks)"
     ]
   }
 }

@@ -15,9 +15,18 @@ echo "Starting Android Build..."
 echo "Build ID: $BUILD_ID"
 mkdir -p "$OUTPUT_DIR"
 
-setup_macos_prerequisites "android"
+# Clone first to detect project type before setting up prerequisites
 clone_repo "$REPO_URL" "$BRANCH" "$WORK_DIR"
 detect_project_type
+
+# Setup prerequisites based on detected project type
+if [ "$PROJECT_TYPE" = "flutter" ]; then
+    echo "📋 Detected Flutter project"
+    setup_macos_prerequisites "flutter"
+else
+    echo "📋 Detected Native Android project"
+    setup_macos_prerequisites "android"
+fi
 load_env
 optimize_gradle
 flutter_prepare        # auto-skips if native

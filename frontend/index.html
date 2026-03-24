@@ -41,22 +41,18 @@
                             <option value="">-- Chọn một branch --</option>
                         </select>
                     </div>
-                    
-                    <div class="form-group">
-                        <label>Chọn Platform</label>
-                        <div class="platform-selection">
-                            <label class="platform-card active" data-platform="android">
-                                <span class="icon">🤖</span>
-                                <span>Android</span>
-                                <small>(Build native trên Host)</small>
-                            </label>
-                            <label class="platform-card" data-platform="ios">
-                                <span class="icon">🍏</span>
-                                <span>iOS</span>
-                                <small>(Build trực tiếp trên macOS Host)</small>
-                            </label>
-                        </div>
+
+                    <div class="form-group" id="platformSelectGroup" style="display: none;">
+                        <label for="platformSelect">Chọn Platform Build</label>
+                        <select id="platformSelect" class="input-light">
+                            <option value="">-- Chọn một platform --</option>
+                            <option value="android">🤖 Android</option>
+                            <option value="ios">🍏 iOS</option>
+                            <option value="both">🔄 Cả Android + iOS</option>
+                        </select>
                     </div>
+
+                    <p class="note info">ℹ️ Loại platform sẽ được tự động phát hiện từ repository. Nếu Flutter trên macOS, bạn có thể chọn build cho cả Android và iOS.</p>
 
                     <button type="submit" id="buildBtn" class="btn primary">Bắt đầu Build</button>
                     <p class="note info">Lưu ý: Build iOS trên Docker Linux là không thể vì yêu cầu Xcode. Hệ thống sẽ build iOS trực tiếp trên môi trường macOS host của bạn.</p>

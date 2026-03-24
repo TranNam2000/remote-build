@@ -48,13 +48,17 @@ setup_macos_prerequisites() {
     [ -d "$gem_bin" ] && export PATH="$gem_bin:$PATH"
     echo "✅ Ruby: $(ruby --version 2>/dev/null)"
 
-    # Flutter
-    if ! command -v flutter >/dev/null 2>&1; then
-        echo "📦 Installing Flutter..."
-        brew install --cask flutter
-        eval "$(/opt/homebrew/bin/brew shellenv 2>/dev/null)" || eval "$(/usr/local/bin/brew shellenv 2>/dev/null)" || true
+    # Flutter (only if needed for this project)
+    if [ "$platform" = "flutter" ] || [ "$PROJECT_TYPE" = "flutter" ]; then
+        if ! command -v flutter >/dev/null 2>&1; then
+            echo "📦 Installing Flutter..."
+            brew install --cask flutter
+            eval "$(/opt/homebrew/bin/brew shellenv 2>/dev/null)" || eval "$(/usr/local/bin/brew shellenv 2>/dev/null)" || true
+        fi
+        echo "✅ Flutter: $(flutter --version 2>/dev/null | head -n 1)"
+    else
+        echo "⊘ Skipping Flutter (native Android project)"
     fi
-    echo "✅ Flutter: $(flutter --version 2>/dev/null | head -n 1)"
 
     # Fastlane — verify it actually runs (not just a broken RVM shim)
     if ! fastlane --version >/dev/null 2>&1; then

@@ -107,6 +107,27 @@ app.post('/api/repos', async (req, res) => {
     }
 });
 
+app.post('/api/detect', async (req, res) => {
+    const { repoUrl, branch } = req.body;
+    if (!repoUrl) return res.status(400).json({ error: 'Missing repoUrl' });
+
+    try {
+        const projectType = await detectProjectType(repoUrl, branch);
+        const isMac = process.platform === 'darwin';
+        const canBuildIos = isMac;
+
+        res.json({
+            projectType: projectType || 'unknown',
+            isMac,
+            canBuildIos,
+            // If Flutter on Mac, show platform selection; otherwise auto-selected
+            needsPlatformSelection: projectType === 'flutter' && isMac
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
 app.post('/api/branches', async (req, res) => {
     const { token, repoFullName } = req.body;
     if (!token || !repoFullName) return res.status(400).json({ error: 'Missing access token or repository name' });
@@ -122,6 +143,55 @@ app.post('/api/branches', async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 });
+
+// --- Project Type Detection ---
+
+async function detectProjectType(repoUrl, branch) {
+    const tempDir = path.join(os.tmpdir(), `detect_${Date.now()}`);
+    try {
+        // Shallow clone for fast detection
+        const cloneArgs = ['clone', '--depth', '1'];
+        if (branch) cloneArgs.push('--branch', branch);
+        cloneArgs.push(repoUrl, 'source');
+
+        const cloneProc = spawn('git', cloneArgs, {
+            cwd: tempDir,
+            stdio: 'pipe'
+        });
+
+        await new Promise((resolve, reject) => {
+            cloneProc.on('close', (code) => {
+                if (code === 0) resolve();
+                else reject(new Error(`Git clone failed with code ${code}`));
+            });
+            cloneProc.on('error', reject);
+        });
+
+        const sourceDir = path.join(tempDir, 'source');
+
+        // Check for project type
+        if (fs.existsSync(path.join(sourceDir, 'pubspec.yaml'))) {
+            return 'flutter'; // Flutter project
+        } else if (fs.existsSync(path.join(sourceDir, 'build.gradle')) ||
+                   fs.existsSync(path.join(sourceDir, 'build.gradle.kts')) ||
+                   fs.existsSync(path.join(sourceDir, 'app/build.gradle')) ||
+                   fs.existsSync(path.join(sourceDir, 'app/build.gradle.kts'))) {
+            return 'android'; // Native Android
+        } else if (fs.existsSync(path.join(sourceDir, 'ios/Runner.xcodeproj')) ||
+                   fs.existsSync(path.join(sourceDir, 'ios/Runner.xcworkspace'))) {
+            return 'ios'; // iOS project
+        }
+        return null; // Unknown
+    } catch (error) {
+        console.error('Detection error:', error.message);
+        return null;
+    } finally {
+        // Cleanup temp dir
+        try {
+            require('child_process').execSync(`rm -rf "${tempDir}"`, { stdio: 'ignore' });
+        } catch {}
+    }
+}
 
 // --- Build System (parallel) ---
 
@@ -140,12 +210,39 @@ function processQueue() {
     });
 }
 
-function startBuild(job) {
-    const { platform, repoUrl, branch, token, lane, res, sendLog } = job;
+async function startBuild(job) {
+    const { repoUrl, branch, token, lane, res, sendLog } = job;
+    let { platform } = job;
 
-    sendLog(`Bắt đầu tiến trình build cho ${platform}...`, 'info');
+    sendLog(`Bắt đầu tiến trình build...`, 'info');
     sendLog(`Repository: ${repoUrl}`, 'info');
     sendLog(`Slots: ${activeBuilds.size + 1}/${MAX_CONCURRENT}`, 'info');
+
+    // If platform not specified, auto-detect
+    if (!platform) {
+        sendLog(`Đang phát hiện loại project...`, 'info');
+        let detectedType = await detectProjectType(repoUrl, branch);
+        if (!detectedType) {
+            sendLog(`Không thể phát hiện loại project, mặc định Android`, 'warn');
+            platform = 'android';
+        } else {
+            platform = detectedType === 'flutter' ? 'android' : detectedType;
+        }
+    }
+
+    // Validate platform compatibility
+    if (platform === 'ios' && process.platform !== 'darwin') {
+        sendLog(`❌ iOS build chỉ hoạt động trên macOS (Xcode required)`, 'error');
+        sendLog(`📋 Nhưng server này là ${process.platform}`, 'error');
+        job.res.end();
+        activeBuilds.delete(job.buildId);
+        processQueue();
+        return;
+    }
+
+    const platformEmoji = platform === 'android' ? '🤖' : '🍏';
+    sendLog(`${platformEmoji} Build: ${platform.toUpperCase()}`, 'success');
+    job.platform = platform;
 
     // Inject token into clone URL
     let finalRepoUrl = repoUrl;
@@ -301,10 +398,12 @@ app.post('/api/cancel', (req, res) => {
 });
 
 app.post('/api/build', (req, res) => {
-    const { platform, repoUrl, branch, token, lane } = req.body;
+    const { repoUrl, branch, token, lane, platform } = req.body;
 
-    if (!platform || !repoUrl) return res.status(400).json({ error: 'Missing platform or repoUrl' });
-    if (platform !== 'android' && platform !== 'ios') return res.status(400).json({ error: 'Platform must be android or ios' });
+    if (!repoUrl) return res.status(400).json({ error: 'Missing repoUrl' });
+    if (platform && platform !== 'android' && platform !== 'ios' && platform !== 'both') {
+        return res.status(400).json({ error: 'Invalid platform' });
+    }
 
     // SSE setup
     res.setHeader('Content-Type', 'text/event-stream');
@@ -316,22 +415,31 @@ app.post('/api/build', (req, res) => {
         res.write(`data: ${JSON.stringify({ message, type })}\n\n`);
     };
 
-    const queueId = `q_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-    const job = { queueId, platform, repoUrl, branch, token, lane, res, sendLog };
+    // Handle "both" platform for Flutter on macOS
+    let platforms = platform === 'both' ? ['android', 'ios'] : [platform || null];
 
-    req.on('close', () => {
-        const index = buildQueue.indexOf(job);
-        if (index !== -1) {
-            buildQueue.splice(index, 1);
-            console.log('Client disconnected, removed from queue.');
+    // Queue builds for each platform
+    platforms.forEach((plt, index) => {
+        const queueId = `q_${Date.now()}_${Math.random().toString(36).slice(2, 6)}_${index}`;
+        const job = { queueId, platform: plt, repoUrl, branch, token, lane, res, sendLog };
+
+        req.on('close', () => {
+            const idx = buildQueue.indexOf(job);
+            if (idx !== -1) {
+                buildQueue.splice(idx, 1);
+                console.log('Client disconnected, removed from queue.');
+            }
+        });
+
+        if (activeBuilds.size >= MAX_CONCURRENT) {
+            if (index === 0) {
+                sendLog(`Đã đưa vào hàng đợi. Vị trí: ${buildQueue.length + 1}. Đang chạy ${activeBuilds.size}/${MAX_CONCURRENT} builds.`, 'info');
+            }
         }
+
+        buildQueue.push(job);
     });
 
-    if (activeBuilds.size >= MAX_CONCURRENT) {
-        sendLog(`Đã đưa vào hàng đợi. Vị trí: ${buildQueue.length + 1}. Đang chạy ${activeBuilds.size}/${MAX_CONCURRENT} builds.`, 'info');
-    }
-
-    buildQueue.push(job);
     processQueue();
 });
 

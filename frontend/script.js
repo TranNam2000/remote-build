@@ -1,5 +1,4 @@
 document.addEventListener('DOMContentLoaded', () => {
-    const platformCards = document.querySelectorAll('.platform-card');
     const form = document.getElementById('buildForm');
     const tokenInput = document.getElementById('gitToken');
     const fetchReposBtn = document.getElementById('fetchReposBtn');
@@ -9,7 +8,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const terminal = document.getElementById('terminal');
     const statusBadge = document.getElementById('statusBadge');
     
-    let selectedPlatform = 'android';
     const tasksList = document.getElementById('tasksList');
     const refreshTasksBtn = document.getElementById('refreshTasksBtn');
     let tasksInterval = null;
@@ -63,13 +61,6 @@ document.addEventListener('DOMContentLoaded', () => {
     loadTasks();
     tasksInterval = setInterval(loadTasks, 2000);
 
-    platformCards.forEach(card => {
-        card.addEventListener('click', () => {
-            platformCards.forEach(c => c.classList.remove('active'));
-            card.classList.add('active');
-            selectedPlatform = card.getAttribute('data-platform');
-        });
-    });
 
     const appendLog = (message, type = 'system') => {
         const div = document.createElement('div');
@@ -123,25 +114,51 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const branchSelectGroup = document.getElementById('branchSelectGroup');
     const branchSelect = document.getElementById('branchSelect');
+    const platformSelectGroup = document.getElementById('platformSelectGroup');
+    const platformSelect = document.getElementById('platformSelect');
+    let detectedProjectType = null;
+    let isMacOS = false;
 
     repoSelect.addEventListener('change', async (e) => {
         if (e.target.value) {
             const selectedOption = e.target.options[e.target.selectedIndex];
             const repoFullName = selectedOption.dataset.fullName;
             const token = tokenInput.value.trim();
-            
+
             branchSelectGroup.style.display = 'none';
             branchSelect.innerHTML = '<option value="">-- Chọn một branch --</option>';
+            platformSelectGroup.style.display = 'none';
 
             if (token && repoFullName) {
                 try {
+                    appendLog(`Đang phát hiện loại project...`, 'info');
+                    const detectRes = await fetch('/api/detect', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ repoUrl: e.target.value, branch: '' })
+                    });
+
+                    if (detectRes.ok) {
+                        const detectData = await detectRes.json();
+                        detectedProjectType = detectData.projectType;
+                        isMacOS = detectData.isMac;
+
+                        appendLog(`📋 Project Type: ${detectedProjectType}`, 'success');
+
+                        // Show platform selection only for Flutter on macOS
+                        if (detectData.needsPlatformSelection) {
+                            platformSelectGroup.style.display = 'block';
+                            appendLog(`✅ Mac detected - bạn có thể build cho Android, iOS, hoặc cả hai`, 'info');
+                        }
+                    }
+
                     appendLog(`Đang tải danh sách nhánh (branches) cho ${repoFullName}...`, 'info');
                     const res = await fetch('/api/branches', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ token, repoFullName })
                     });
-                    
+
                     if (res.ok) {
                         const data = await res.json();
                         if (data.branches && data.branches.length > 0) {
@@ -158,7 +175,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         throw new Error('Không thể tải branch');
                     }
                 } catch(err) {
-                    appendLog(`Lỗi tải branches: ${err.message}`, 'error');
+                    appendLog(`Lỗi: ${err.message}`, 'error');
                 }
             }
         }
@@ -166,7 +183,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     form.addEventListener('submit', async (e) => {
         e.preventDefault();
-        
+
         const repoUrl = repoSelect.value.trim();
         const branch = branchSelect.value.trim();
         const token = tokenInput.value.trim();
@@ -175,16 +192,32 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
+        // Determine platform to build
+        let platform = null;
+        if (platformSelectGroup.style.display !== 'none') {
+            platform = platformSelect.value;
+            if (!platform) {
+                alert('Vui lòng chọn platform (Android/iOS/Both)');
+                return;
+            }
+        } else {
+            // Auto-select based on detected type
+            if (detectedProjectType === 'flutter') platform = 'android';
+            else if (detectedProjectType === 'android') platform = 'android';
+            else if (detectedProjectType === 'ios') platform = 'ios';
+            else platform = 'android'; // default
+        }
+
         buildBtn.disabled = true;
         buildBtn.textContent = 'Đang Build...';
         statusBadge.className = 'badge running';
         statusBadge.textContent = 'Running';
         terminal.innerHTML = '';
-        
-        appendLog(`Bắt đầu yêu cầu build cho ${selectedPlatform.toUpperCase()}`, 'info');
+
+        appendLog(`Bắt đầu yêu cầu build`, 'info');
         appendLog(`Repository: ${repoUrl}`, 'info');
         if (branch) appendLog(`Branch: ${branch}`, 'info');
-        
+        appendLog(`Platform: ${platform === 'both' ? 'Android + iOS' : platform.toUpperCase()}`, 'info');
 
         try {
             const response = await fetch('/api/build', {
@@ -192,7 +225,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 headers: {
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify({ platform: selectedPlatform, repoUrl, branch, token })
+                body: JSON.stringify({ repoUrl, branch, token, platform })
             });
 
             if (!response.ok) {

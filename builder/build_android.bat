@@ -111,19 +111,26 @@ echo ==^> STEP: Detect project type
 set "PROJECT_TYPE=flutter"
 if exist "pubspec.yaml" (
     set "PROJECT_TYPE=flutter"
-    echo [i] Detected: Flutter project
+    echo [OK] Detected: Flutter project
 ) else if exist "build.gradle" (
     set "PROJECT_TYPE=native_android"
-    echo [i] Detected: Native Android project
+    echo [OK] Detected: Native Android project
 ) else if exist "build.gradle.kts" (
     set "PROJECT_TYPE=native_android"
-    echo [i] Detected: Native Android project
+    echo [OK] Detected: Native Android project
 ) else if exist "app\build.gradle" (
     set "PROJECT_TYPE=native_android"
-    echo [i] Detected: Native Android project
+    echo [OK] Detected: Native Android project
 ) else if exist "app\build.gradle.kts" (
     set "PROJECT_TYPE=native_android"
-    echo [i] Detected: Native Android project
+    echo [OK] Detected: Native Android project
+)
+
+:: ====== Setup prerequisites based on project type ======
+if "%PROJECT_TYPE%"=="flutter" (
+    echo ==^> STEP: Setup Flutter environment
+) else (
+    echo ==^> STEP: Setup Native Android environment
 )
 
 :: ====== Load .env ======
@@ -178,23 +185,23 @@ echo org.gradle.caching=false>> "!PROPS!"
 echo org.gradle.workers.max=2>> "!PROPS!"
 echo android.dexOptions.incremental=true>> "!PROPS!"
 
-:: ====== Flutter prepare ======
+:: ====== Conditional: Flutter only ======
 if "%PROJECT_TYPE%"=="flutter" (
-    echo ==^> STEP: flutter pub get
+    echo ==^> STEP: Flutter pub get
     call flutter pub get
 
     findstr /i "build_runner" pubspec.yaml >nul 2>&1
     if not errorlevel 1 (
-        echo ==^> STEP: build_runner
+        echo ==^> STEP: Build runner
         call flutter pub run build_runner build --delete-conflicting-outputs
     )
 
     if exist "scripts\generate.dart" (
-        echo ==^> STEP: generate.dart
+        echo ==^> STEP: Scripts generate
         call dart run scripts\generate.dart
     )
 ) else (
-    echo ==^> SKIP: flutter_prepare ^(native Android^)
+    echo [i] Skipping Flutter steps ^(native Android project^)
 )
 
 :: ====== Setup Fastfile ======
