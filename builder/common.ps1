@@ -1,6 +1,38 @@
-# builder/common.ps1 — Shared functions for Flutter Remote Builder (Windows)
+# builder/common.ps1 - Shared functions for Flutter Remote Builder (Windows)
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
 
 $global:ProjectType = ""
+
+# --- Refresh PATH from registry + common tool locations ---
+# Called at load time and after each tool install
+function Refresh-Path {
+    $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("PATH", "User")
+    # Add common tool paths
+    $extras = @(
+        "$env:ProgramFiles\nodejs",
+        "$env:ProgramFiles\Git\cmd",
+        "$env:USERPROFILE\flutter\bin",
+        "$env:LOCALAPPDATA\flutter\bin",
+        "$env:ProgramFiles\Flutter\bin",
+        "$env:USERPROFILE\fvm\default\bin",
+        "$env:LOCALAPPDATA\Pub\Cache\bin",
+        "$env:USERPROFILE\.pub-cache\bin",
+        "$env:ProgramFiles\dart-sdk\bin"
+    )
+
+    # Always include the exact Gem bindir where fastlane gets installed
+    $rubyCmd = Get-Command ruby -ErrorAction SilentlyContinue
+    if ($rubyCmd) {
+        $gemBin = try { ruby -e "print Gem.bindir" 2>$null } catch { $null }
+        if ($gemBin -and (Test-Path $gemBin) -and ($env:PATH -notlike "*$gemBin*")) {
+            $env:PATH += ";$gemBin"
+        }
+    }
+}
+
+# Refresh PATH immediately when common.ps1 is loaded
+Refresh-Path
 
 # --- Setup prerequisites on Windows ---
 function Setup-Prerequisites {
@@ -13,49 +45,78 @@ function Setup-Prerequisites {
 
     # Java 17
     if (-not (Get-Command java -ErrorAction SilentlyContinue)) {
-        Write-Host "📦 Installing OpenJDK 17..."
+        Write-Host "[INSTALL] Installing OpenJDK 17..."
         if ($hasWinget)       { winget install --id Microsoft.OpenJDK.17 -e --silent }
         elseif ($hasChoco)    { choco install openjdk17 -y }
-        else { Write-Host "⚠️  Install Java 17 manually: https://adoptium.net" }
+        else { Write-Host "[WARN] Install Java 17 manually: https://adoptium.net" }
+        Refresh-Path
     }
-    # Set JAVA_HOME if not set
+    # Ensure JAVA_HOME is set and valid
+    if ($env:JAVA_HOME -and -not (Test-Path "$env:JAVA_HOME\bin\java.exe")) {
+        Write-Host "[WARN] Existing JAVA_HOME is invalid: $env:JAVA_HOME"
+        $env:JAVA_HOME = $null
+    }
+
     if (-not $env:JAVA_HOME) {
-        $javaExe = (Get-Command java -ErrorAction SilentlyContinue)?.Source
-        if ($javaExe) {
-            $env:JAVA_HOME = Split-Path (Split-Path $javaExe)
+        $javaProps = cmd.exe /c "java -XshowSettings:properties -version 2>&1"
+        foreach ($line in $javaProps) {
+            if ($line -match 'java\.home\s*=\s*(.*)') {
+                $env:JAVA_HOME = $matches[1].Trim()
+                break
+            }
+        }
+        if (-not $env:JAVA_HOME) {
+            $javaCmd = Get-Command java -ErrorAction SilentlyContinue
+            $javaExe = if ($javaCmd) { $javaCmd.Source } else { $null }
+            if ($javaExe) {
+                $env:JAVA_HOME = Split-Path (Split-Path $javaExe)
+            }
         }
     }
-    Write-Host "✅ Java: $(java -version 2>&1 | Select-Object -First 1)"
+    $javaVer = try { (java -version 2>&1) | Select-Object -First 1 } catch { "not found" }
+    Write-Host "[OK] Java: $javaVer"
 
     # Flutter (only for Flutter projects)
     if ($global:ProjectType -eq "flutter") {
         if (-not (Get-Command flutter -ErrorAction SilentlyContinue)) {
-            Write-Host "📦 Installing Flutter..."
+            Write-Host "[INSTALL] Installing Flutter..."
             if ($hasWinget)    { winget install --id Google.Flutter -e --silent }
             elseif ($hasChoco) { choco install flutter -y }
-            else { Write-Host "⚠️  Install Flutter manually: https://flutter.dev" }
+            else { Write-Host "[WARN] Install Flutter manually: https://flutter.dev" }
+            Refresh-Path
         }
-        Write-Host "✅ Flutter: $(flutter --version 2>&1 | Select-Object -First 1)"
+        $flutterVer = try { (flutter --version 2>&1) | Select-Object -First 1 } catch { "not found" }
+        Write-Host "[OK] Flutter: $flutterVer"
     } else {
-        Write-Host "⊘ Skipping Flutter (native project)"
+        Write-Host "[SKIP] Skipping Flutter (native project)"
     }
 
-    # Ruby + Fastlane (required)
+    # Ruby + Fastlane (required for Fastlane builds)
     if (-not (Get-Command ruby -ErrorAction SilentlyContinue)) {
-        Write-Host "📦 Installing Ruby..."
+        Write-Host "[INSTALL] Installing Ruby..."
         if ($hasWinget)    { winget install --id RubyInstallerTeam.RubyWithDevKit.3.2 -e --silent }
         elseif ($hasChoco) { choco install ruby -y }
-        else { throw "❌ Ruby is required for Fastlane. Install from https://rubyinstaller.org" }
-        # Refresh PATH after install
-        $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("PATH", "User")
+        else { Write-Host "[WARN] Ruby not found. Fastlane will not work." }
+        Refresh-Path
     }
-    Write-Host "✅ Ruby: $(ruby --version 2>&1)"
+    $rubyVer = try { (ruby --version 2>&1) | Select-Object -First 1 } catch { "not found" }
+    Write-Host "[OK] Ruby: $rubyVer"
 
-    if (-not (Get-Command fastlane -ErrorAction SilentlyContinue)) {
-        Write-Host "📦 Installing Fastlane..."
-        gem install fastlane --no-document
+    if (Get-Command gem -ErrorAction SilentlyContinue) {
+        if (-not (Get-Command fastlane -ErrorAction SilentlyContinue)) {
+            Write-Host "[INSTALL] Installing Fastlane..."
+            gem install fastlane --no-document
+            if (-not (Get-Command fastlane -ErrorAction SilentlyContinue)) {
+                $rubyBin = (Get-Command gem).Source | Split-Path
+                if (Test-Path "$rubyBin\fastlane.bat") { $env:PATH += ";$rubyBin" }
+            }
+            Refresh-Path
+        }
+        $fastlaneVer = try { (fastlane --version 2>&1) | Select-Object -Last 1 } catch { "not found" }
+        Write-Host "[OK] Fastlane: $fastlaneVer"
+    } else {
+        Write-Host "[WARN] gem not found, skipping Fastlane install"
     }
-    Write-Host "✅ Fastlane: $(fastlane --version 2>&1 | Select-Object -Last 1)"
 
     # Android SDK
     if (-not $env:ANDROID_HOME) {
@@ -63,13 +124,13 @@ function Setup-Prerequisites {
         if (Test-Path $defaultSdk) {
             $env:ANDROID_HOME = $defaultSdk
         } else {
-            Write-Host "⚠️  ANDROID_HOME not set. Install Android Studio or SDK Command-line Tools."
+            Write-Host "[WARN] ANDROID_HOME not set. Install Android Studio or SDK Command-line Tools."
             Write-Host "    Default location: $defaultSdk"
         }
     }
     if ($env:ANDROID_HOME) {
         $env:PATH += ";$env:ANDROID_HOME\cmdline-tools\latest\bin;$env:ANDROID_HOME\platform-tools;$env:ANDROID_HOME\build-tools"
-        Write-Host "✅ Android SDK: $env:ANDROID_HOME"
+        Write-Host "[OK] Android SDK: $env:ANDROID_HOME"
         # Accept licenses
         $sdkManager = "$env:ANDROID_HOME\cmdline-tools\latest\bin\sdkmanager.bat"
         if (Test-Path $sdkManager) {
@@ -116,7 +177,7 @@ function Detect-ProjectType {
     } else {
         $global:ProjectType = "flutter"  # default
     }
-    Write-Host "📋 Detected project type: $($global:ProjectType)"
+    Write-Host "[INFO] Detected project type: $($global:ProjectType)"
 }
 
 # --- Flutter pub get + code generation ---
@@ -154,10 +215,10 @@ function Install-RequiredSdk {
     foreach ($ver in ($versions | Sort-Object -Unique)) {
         $platformDir = "$env:ANDROID_HOME\platforms\android-$ver"
         if (-not (Test-Path $platformDir)) {
-            Write-Host "📦 Installing platforms;android-$ver..."
+            Write-Host "[INSTALL] Installing platforms;android-$ver..."
             & $sdkManager "platforms;android-$ver" 2>$null
         } else {
-            Write-Host "✅ platforms;android-$ver already installed"
+            Write-Host "[OK] platforms;android-$ver already installed"
         }
     }
 }
@@ -181,8 +242,9 @@ function Optimize-Gradle {
         $aapt2 = Get-ChildItem "$env:ANDROID_HOME\build-tools" -Recurse -Filter "aapt2.exe" |
             Sort-Object FullName | Select-Object -Last 1
         if ($aapt2) {
-            Add-Content $props "android.aapt2FromMavenOverride=$($aapt2.FullName)"
-            Write-Host "Using aapt2: $($aapt2.FullName)"
+            $aapt2Path = $aapt2.FullName -replace '\\', '/'
+            Add-Content $props "android.aapt2FromMavenOverride=$aapt2Path"
+            Write-Host "Using aapt2: $aapt2Path"
         }
     }
 }
@@ -214,7 +276,7 @@ function Setup-Fastfile {
 
         if ($Platform -eq "android" -and $global:ProjectType -eq "native_android") {
             @'
-# Codex managed Fastfile — Native Android
+# Codex managed Fastfile - Native Android
 default_platform(:android)
 
 platform :android do
@@ -227,11 +289,16 @@ platform :android do
   lane :bundle do
     gradle(task: "bundleRelease")
   end
+
+  desc "Build debug APK (native Android)"
+  lane :debug do
+    gradle(task: "assembleDebug")
+  end
 end
 '@ | Set-Content "$targetDir\fastlane\Fastfile" -Encoding UTF8
         } elseif ($Platform -eq "android") {
             @'
-# Codex managed Fastfile — Flutter Android
+# Codex managed Fastfile - Flutter Android
 default_platform(:android)
 
 platform :android do
@@ -244,6 +311,11 @@ platform :android do
   lane :bundle do
     sh("cd .. && flutter build appbundle --release")
   end
+
+  desc "Build debug APK"
+  lane :debug do
+    sh("cd .. && flutter build apk --debug")
+  end
 end
 '@ | Set-Content "$targetDir\fastlane\Fastfile" -Encoding UTF8
         }
@@ -255,7 +327,7 @@ end
 function Run-Fastlane {
     param([string]$Platform, [string]$Lane = "release")
     Write-Host "==> STEP: Fastlane"
-    Write-Host "🚀 Running Fastlane lane: $Lane for $Platform ($($global:ProjectType))..."
+    Write-Host "[RUN] Running Fastlane lane: $Lane for $Platform ($($global:ProjectType))..."
 
     $runDir = $Platform
     if ($global:ProjectType -eq "native_android") { $runDir = "." }
@@ -286,19 +358,29 @@ function Build-Android {
 
 # --- Collect Android artifact ---
 function Collect-AndroidArtifact {
-    param([string]$OutputDir)
+    param([string]$OutputDir, [string]$Lane = "release")
     Write-Host "==> STEP: Collect artifact"
     $artifact = $null
+    $isDebug = ($Lane -eq "debug")
+
     if ($global:ProjectType -eq "flutter") {
         $artifact = Get-ChildItem "build\app\outputs" -Recurse -Include "*.apk","*.aab" -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -notmatch "debug" } | Select-Object -First 1
+            Where-Object {
+                if ($isDebug) { $_.Name -match "debug" }
+                else { $_.Name -notmatch "debug" }
+            } | Select-Object -First 1
     } else {
         $artifact = Get-ChildItem "." -Recurse -Include "*.apk","*.aab" -ErrorAction SilentlyContinue |
-            Where-Object { $_.FullName -match "outputs" -and $_.Name -notmatch "debug" } | Select-Object -First 1
+            Where-Object {
+                if ($_.FullName -notmatch "outputs") { $false }
+                elseif ($isDebug) { $_.Name -match "debug" }
+                else { $_.Name -notmatch "debug" }
+            } | Select-Object -First 1
     }
     if ($artifact) {
         Copy-Item $artifact.FullName "$OutputDir\$($artifact.Name)" -Force
-        Copy-Item $artifact.FullName "$OutputDir\app-release.apk" -Force -ErrorAction SilentlyContinue
+        $outputName = if ($isDebug) { "app-debug.apk" } else { "app-release.apk" }
+        Copy-Item $artifact.FullName "$OutputDir\$outputName" -Force -ErrorAction SilentlyContinue
         Write-Host "Saved to $OutputDir\$($artifact.Name)"
     } else {
         Write-Host "Error: No build artifact found!"

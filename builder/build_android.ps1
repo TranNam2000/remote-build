@@ -1,4 +1,4 @@
-# builder/build_android.ps1 — Android build script for Windows
+# builder/build_android.ps1 - Android build script for Windows
 param(
     [string]$RepoUrl,
     [string]$Branch = "",
@@ -17,7 +17,7 @@ Write-Host "Starting Android Build..."
 Write-Host "Build ID: $BuildId"
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 
-# Clone → detect project type → setup
+# Clone -> detect project type -> setup
 Clone-Repo -RepoUrl $RepoUrl -Branch $Branch -WorkDir $WorkDir
 Detect-ProjectType
 Setup-Prerequisites -Platform "android"
@@ -40,7 +40,7 @@ try {
         Measure-Object -Maximum).Maximum
 
     if ($requiredSdk -gt 0) {
-        Write-Host "🔄 Retrying with compileSdk = $requiredSdk..."
+        Write-Host "[RETRY] Retrying with compileSdk = $requiredSdk..."
         Get-ChildItem -Recurse -Include "build.gradle","build.gradle.kts" | ForEach-Object {
             $c = Get-Content $_.FullName -Raw
             if ($c -match 'compileSdk\w*\s*[=]?\s*(\d+)') {
@@ -52,11 +52,11 @@ try {
         }
         Build-Android -Lane $Lane
     } else {
-        Write-Host "❌ Build failed: $_"
+        Write-Host "[ERROR] Build failed: $_"
         exit 1
     }
 }
 
-Collect-AndroidArtifact -OutputDir $OutputDir
+Collect-AndroidArtifact -OutputDir $OutputDir -Lane $Lane
 Cleanup-Temp -Dir $WorkDir
-Write-Host "✅ Done!"
+Write-Host "[OK] Done!"

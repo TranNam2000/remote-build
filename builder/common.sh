@@ -1,9 +1,26 @@
 #!/bin/bash
-# builder/common.sh — Shared functions for Flutter Remote Builder
+# builder/common.sh - Shared functions for Flutter Remote Builder
 
 # Fix locale for CocoaPods, Fastlane, Ruby
 export LC_ALL=en_US.UTF-8
 export LANG=en_US.UTF-8
+
+# --- Refresh PATH (pick up tools installed after server started) ---
+refresh_path() {
+    # Homebrew
+    [ -d "/opt/homebrew/bin" ] && export PATH="/opt/homebrew/bin:$PATH"
+    [ -d "/usr/local/bin" ] && export PATH="/usr/local/bin:$PATH"
+    # Flutter
+    [ -d "$HOME/flutter/bin" ] && export PATH="$HOME/flutter/bin:$PATH"
+    [ -d "$HOME/fvm/default/bin" ] && export PATH="$HOME/fvm/default/bin:$PATH"
+    [ -d "$HOME/.pub-cache/bin" ] && export PATH="$HOME/.pub-cache/bin:$PATH"
+    # Ruby gems
+    [ -d "$HOME/.gem/ruby/*/bin" ] && export PATH="$(echo $HOME/.gem/ruby/*/bin | tr ' ' ':'):$PATH"
+    # Android SDK
+    [ -d "$HOME/Library/Android/sdk" ] && export ANDROID_HOME="$HOME/Library/Android/sdk"
+    [ -n "$ANDROID_HOME" ] && export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
+}
+refresh_path
 
 # --- Auto-install prerequisites on macOS ---
 # Usage: setup_macos_prerequisites "android" | "ios"
@@ -271,24 +288,22 @@ setup_fastfile() {
         mkdir -p "${target_dir}/fastlane"
 
         if [ "$platform" = "android" ] && [ "$PROJECT_TYPE" = "native_android" ]; then
-            # Native Android — use gradle directly with flavor from FLAVOR env
+            # Native Android - use gradle directly with flavor from FLAVOR env
             local flavor_cap=""
             if [ -n "$FLAVOR" ]; then
                 flavor_cap="$(echo "${FLAVOR:0:1}" | tr '[:lower:]' '[:upper:]')${FLAVOR:1}"
             fi
             cat > "${target_dir}/fastlane/Fastfile" <<NEOF
-# Codex managed Fastfile — Native Android
+# Codex managed Fastfile - Native Android
 default_platform(:android)
 
 platform :android do
-  desc "Build APK (native Android)"
+  desc "Build release APK (native Android)"
   lane :release do
-    gradle(
-      task: "assemble${flavor_cap}Release"
-    )
+    gradle(task: "assemble${flavor_cap}Release")
   end
 
-  desc "Build AAB (native Android)"
+  desc "Build release AAB (native Android)"
   lane :bundle do
     gradle(
       task: "bundle${flavor_cap}Release"
@@ -305,7 +320,7 @@ NEOF
 default_platform(:android)
 
 platform :android do
-  desc "Build APK"
+  desc "Build release APK"
   lane :release do
     sh("cd .. && flutter build apk --release${flavor_flag}")
   end
