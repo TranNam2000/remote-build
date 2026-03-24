@@ -153,23 +153,30 @@ if defined AAPT2_PATH (
     echo android.aapt2FromMavenOverride=!AAPT2_PATH!>> "!PROPS!"
 )
 
-:: Kill stale Gradle daemons
+:: Kill stale Gradle daemons aggressively
 echo Killing stale Gradle daemons...
 taskkill /f /im java.exe /fi "WINDOWTITLE eq *GradleDaemon*" >nul 2>&1
+taskkill /f /im java.exe /fi "COMMANDLINE eq *gradle*" >nul 2>&1
+timeout /t 2 >nul
 
 echo org.gradle.daemon=true>> "!PROPS!"
-:: Detect RAM and allocate ~50%% (min 2GB)
+:: Detect RAM and allocate conservatively (40%% max, min 2GB, cap 6GB)
 set "JVM_MAX=2048"
 for /f "tokens=2 delims==" %%M in ('wmic computersystem get TotalPhysicalMemory /value 2^>nul') do (
     set /a "TOTAL_MB=%%M / 1048576" 2>nul
-    set /a "HALF_MB=!TOTAL_MB! / 2" 2>nul
-    if !HALF_MB! LSS 2048 set "HALF_MB=2048"
-    set "JVM_MAX=!HALF_MB!"
+    set /a "AVAILABLE_MB=!TOTAL_MB! - 1024" 2>nul
+    if !AVAILABLE_MB! LSS 2048 set "AVAILABLE_MB=2048"
+    set /a "HEAP_MB=!AVAILABLE_MB! * 40 / 100" 2>nul
+    if !HEAP_MB! LSS 2048 set "HEAP_MB=2048"
+    if !HEAP_MB! GTR 6144 set "HEAP_MB=6144"
+    set "JVM_MAX=!HEAP_MB!"
 )
 echo JVM heap: !JVM_MAX!m ^(total RAM: !TOTAL_MB!MB^)
-echo org.gradle.jvmargs=-Xmx!JVM_MAX!m -XX:MaxMetaspaceSize=512m -XX:+HeapDumpOnOutOfMemoryError>> "!PROPS!"
-echo org.gradle.parallel=true>> "!PROPS!"
-echo org.gradle.caching=true>> "!PROPS!"
+echo org.gradle.jvmargs=-Xmx!JVM_MAX!m -XX:MaxMetaspaceSize=256m -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -XX:+HeapDumpOnOutOfMemoryError>> "!PROPS!"
+echo org.gradle.parallel=false>> "!PROPS!"
+echo org.gradle.caching=false>> "!PROPS!"
+echo org.gradle.workers.max=2>> "!PROPS!"
+echo android.dexOptions.incremental=true>> "!PROPS!"
 
 :: ====== Flutter prepare ======
 if "%PROJECT_TYPE%"=="flutter" (

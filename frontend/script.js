@@ -10,6 +10,58 @@ document.addEventListener('DOMContentLoaded', () => {
     const statusBadge = document.getElementById('statusBadge');
     
     let selectedPlatform = 'android';
+    const tasksList = document.getElementById('tasksList');
+    const refreshTasksBtn = document.getElementById('refreshTasksBtn');
+    let tasksInterval = null;
+
+    // --- Tasks panel ---
+    async function loadTasks() {
+        try {
+            const res = await fetch('/api/tasks');
+            const { tasks } = await res.json();
+            if (tasks.length === 0) {
+                tasksList.innerHTML = '<p class="no-tasks">Không có build nào đang chạy.</p>';
+                return;
+            }
+            tasksList.innerHTML = tasks.map(t => {
+                const repo = t.repoUrl.replace('https://github.com/', '').replace('.git', '');
+                const detail = t.status === 'running'
+                    ? `${t.branch} · ${t.elapsed}`
+                    : `${t.branch} · Hàng đợi #${t.position}`;
+                return `
+                    <div class="task-item">
+                        <div class="task-info">
+                            <div class="task-name">${t.platform === 'android' ? '🤖' : '🍏'} ${repo}</div>
+                            <div class="task-detail">${detail}</div>
+                        </div>
+                        <span class="task-status ${t.status}">${t.status === 'running' ? '🔄 Running' : '⏳ Queued'}</span>
+                        <button class="btn-cancel" onclick="cancelTask('${t.id}')">✕ Hủy</button>
+                    </div>`;
+            }).join('');
+        } catch {}
+    }
+
+    window.cancelTask = async function(id) {
+        if (!confirm('Bạn chắc chắn muốn hủy build này?')) return;
+        try {
+            const res = await fetch('/api/cancel', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id })
+            });
+            const data = await res.json();
+            if (data.success) {
+                appendLog('⛔ Build đã bị hủy.', 'error');
+                loadTasks();
+            } else {
+                alert(data.error || 'Không thể hủy');
+            }
+        } catch (e) { alert('Lỗi: ' + e.message); }
+    };
+
+    refreshTasksBtn.addEventListener('click', loadTasks);
+    loadTasks();
+    tasksInterval = setInterval(loadTasks, 2000);
 
     platformCards.forEach(card => {
         card.addEventListener('click', () => {

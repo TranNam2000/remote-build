@@ -195,31 +195,41 @@ optimize_gradle() {
         echo "⚠️  No aapt2 found. Build may fail."
     fi
 
-    # Kill stale Gradle daemons to free memory
+    # Aggressively kill stale Gradle daemons to free memory
+    echo "🧹 Cleaning Gradle daemons..."
     if command -v gradle >/dev/null 2>&1; then
         gradle --stop 2>/dev/null || true
     fi
-    pkill -f "GradleDaemon" 2>/dev/null || true
-    echo "🧹 Killed stale Gradle daemons"
+    pkill -9 -f "GradleDaemon" 2>/dev/null || true
+    pkill -9 -f "java.*gradle" 2>/dev/null || true
+    sleep 2  # Wait for processes to fully die
+    echo "✅ Gradle daemons cleaned"
 
-    # Detect available RAM and allocate ~50% (min 4G for R8/minify)
-    local jvm_max="4096m"
+    # Detect available RAM and allocate conservatively (40% max, min 2GB)
+    local jvm_max="2048m"
+    local total_mb=0
     if command -v sysctl >/dev/null 2>&1; then
-        local total_mb
         total_mb=$(( $(sysctl -n hw.memsize 2>/dev/null || echo 0) / 1048576 ))
-        if [ "$total_mb" -gt 0 ]; then
-            local half_mb=$(( total_mb / 2 ))
-            [ "$half_mb" -lt 4096 ] && half_mb=4096
-            jvm_max="${half_mb}m"
-        fi
     fi
-    echo "JVM heap: $jvm_max (total RAM: ${total_mb:-unknown}MB)"
+
+    if [ "$total_mb" -gt 0 ]; then
+        # Reserve 1GB for system, allocate 40% of remaining
+        local available_mb=$(( total_mb - 1024 ))
+        [ "$available_mb" -lt 2048 ] && available_mb=2048
+        local heap_mb=$(( available_mb * 40 / 100 ))
+        [ "$heap_mb" -lt 2048 ] && heap_mb=2048
+        [ "$heap_mb" -gt 6144 ] && heap_mb=6144  # Cap at 6GB to avoid daemon crashes
+        jvm_max="${heap_mb}m"
+    fi
+    echo "JVM heap: $jvm_max (total RAM: ${total_mb}MB)"
 
     echo "org.gradle.daemon=true" >> "$props"
-    echo "org.gradle.jvmargs=-Xmx${jvm_max} -XX:MaxMetaspaceSize=512m -XX:+HeapDumpOnOutOfMemoryError" >> "$props"
-    echo "org.gradle.parallel=true" >> "$props"
-    echo "org.gradle.caching=true" >> "$props"
+    echo "org.gradle.jvmargs=-Xmx${jvm_max} -XX:MaxMetaspaceSize=256m -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -XX:+HeapDumpOnOutOfMemoryError" >> "$props"
+    echo "org.gradle.parallel=false" >> "$props"
+    echo "org.gradle.caching=false" >> "$props"
+    echo "org.gradle.workers.max=2" >> "$props"
     echo "android.enableR8.fullMode=false" >> "$props"
+    echo "android.dexOptions.incremental=true" >> "$props"
 }
 
 # --- Setup Fastfile for platform ---

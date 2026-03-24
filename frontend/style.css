@@ -265,3 +265,46 @@ select.input-light option {
 .log-success { color: var(--success); }
 .log-error { color: var(--error); }
 .log-system { color: #b1bac4; }
+
+/* Tasks panel */
+.tasks-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+.tasks-list { margin-top: 10px; }
+.no-tasks { color: var(--text-sec); font-style: italic; text-align: center; padding: 15px 0; }
+.task-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 15px;
+    background: var(--terminal-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    margin-bottom: 8px;
+}
+.task-info { flex: 1; }
+.task-info .task-name { font-weight: 600; color: var(--text-primary); }
+.task-info .task-detail { font-size: 0.8rem; color: var(--text-sec); margin-top: 2px; }
+.task-status {
+    padding: 3px 10px;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    margin: 0 12px;
+}
+.task-status.running { background: rgba(88,166,255,0.2); color: var(--primary); animation: pulse 1.5s infinite; }
+.task-status.queued { background: rgba(210,153,34,0.2); color: #d29922; }
+.btn-cancel {
+    background: transparent;
+    border: 1px solid var(--error);
+    color: var(--error);
+    padding: 5px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.8rem;
+    font-weight: 600;
+    transition: all 0.2s;
+}
+.btn-cancel:hover { background: var(--error); color: #fff; }

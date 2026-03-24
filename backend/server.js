@@ -11,7 +11,7 @@ const PORT = 3000;
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '8793252151:AAH-P7LoLGKKo5_pPBgk9MPlmVpOKsXPSN0';
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '2019979030';
 
-// Auto-detect LAN IP for Telegram download links
+// Auto-detect IP: public (VPS) → LAN → localhost
 function getLanIP() {
     const nets = os.networkInterfaces();
     for (const name of Object.keys(nets)) {
@@ -23,7 +23,28 @@ function getLanIP() {
     }
     return 'localhost';
 }
-const BASE_URL = process.env.BASE_URL || `http://${getLanIP()}:${PORT}`;
+
+async function getPublicIP() {
+    const services = [
+        'https://api.ipify.org',
+        'https://icanhazip.com',
+        'https://ifconfig.me/ip',
+    ];
+    for (const url of services) {
+        try {
+            const res = await fetch(url, {
+                signal: AbortSignal.timeout(3000),
+                headers: { 'Accept': 'text/plain', 'User-Agent': 'curl/7.0' }
+            });
+            const ip = (await res.text()).trim();
+            if (/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) return ip;
+        } catch {}
+    }
+    return null;
+}
+
+// Will be set after server starts
+let BASE_URL = process.env.BASE_URL || `http://${getLanIP()}`;
 
 app.use(cors());
 app.use(express.json());
@@ -102,25 +123,29 @@ app.post('/api/branches', async (req, res) => {
     }
 });
 
-// --- Build Queue ---
+// --- Build System (parallel) ---
 
+const MAX_CONCURRENT = parseInt(process.env.MAX_BUILDS) || 3;
 const buildQueue = [];
-let isBuilding = false;
+const activeBuilds = new Map(); // buildId → { job, process }
 
 function processQueue() {
-    if (isBuilding || buildQueue.length === 0) return;
-
-    isBuilding = true;
-    const job = buildQueue.shift();
-
+    while (activeBuilds.size < MAX_CONCURRENT && buildQueue.length > 0) {
+        const job = buildQueue.shift();
+        startBuild(job);
+    }
+    // Notify remaining queue positions
     buildQueue.forEach((qJob, index) => {
-        qJob.sendLog(`Bạn đang ở vị trí số ${index + 1} trong hàng đợi...`, 'info');
+        qJob.sendLog(`Hàng đợi: vị trí ${index + 1}/${buildQueue.length}. Đang chạy ${activeBuilds.size}/${MAX_CONCURRENT} builds.`, 'info');
     });
+}
 
+function startBuild(job) {
     const { platform, repoUrl, branch, token, lane, res, sendLog } = job;
 
     sendLog(`Bắt đầu tiến trình build cho ${platform}...`, 'info');
     sendLog(`Repository: ${repoUrl}`, 'info');
+    sendLog(`Slots: ${activeBuilds.size + 1}/${MAX_CONCURRENT}`, 'info');
 
     // Inject token into clone URL
     let finalRepoUrl = repoUrl;
@@ -135,31 +160,33 @@ function processQueue() {
         }
     }
 
-    const buildId = `${platform}_${Date.now()}`;
+    const buildId = `${platform}_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`;
+    job.buildId = buildId;
+    job.startTime = Date.now();
     sendLog(`Build ID: ${buildId}`, 'info');
 
-    // Choose script
     const isWindows = process.platform === 'win32';
     const ext = isWindows ? '.bat' : '.sh';
     const scriptName = `build_${platform}${ext}`;
     const builderDir = path.join(__dirname, '../builder');
     const scriptPath = path.join(builderDir, scriptName);
 
-    // Spawn build process
     let buildProcess;
     const args = [finalRepoUrl, branch || "", buildId, lane || ""];
     if (isWindows) {
         buildProcess = spawn(scriptPath, args, { cwd: builderDir, shell: true });
     } else {
-        buildProcess = spawn('bash', [scriptPath, ...args], { cwd: builderDir });
+        buildProcess = spawn('bash', [scriptPath, ...args], { cwd: builderDir, detached: true });
     }
+
+    activeBuilds.set(buildId, { job, process: buildProcess });
 
     buildProcess.stdout.on('data', (data) => sendLog(data.toString(), 'log'));
     buildProcess.stderr.on('data', (data) => sendLog(data.toString(), 'error'));
 
     const finishJob = () => {
+        activeBuilds.delete(buildId);
         res.end();
-        isBuilding = false;
         processQueue();
     };
 
@@ -168,7 +195,6 @@ function processQueue() {
         const platformName = platform === 'android' ? 'Android' : 'iOS';
 
         if (code === 0) {
-            // Detect artifact filename
             let fileName = 'app-release.apk';
             if (platform === 'ios') {
                 const buildDir = path.join(builderDir, 'completed_builds', buildId);
@@ -191,11 +217,10 @@ function processQueue() {
             notifyTelegram(
                 `✅ **Build Thành Công!**\n\n📌 **Dự án:** ${repoUrl}\n🌿 **Nhánh:** ${branch}\n${icon} **Nền tảng:** ${platformName}\n📦 **Tải xuống:** [Download](${fullDownloadUrl})\n⏱️ **ID:** ${buildId}`
             );
-        } else {
+        } else if (code !== null) {
             sendLog(`Build failed with exit code ${code} ❌`, 'error');
-
             notifyTelegram(
-                `❌ **Build Thất Bại!**\n\n📌 **Dự án:** ${repoUrl}\n🌿 **Nhánh:** ${branch}\n${icon} **Nền tảng:** ${platformName}\n⏱️ **ID:** ${buildId}\n\nXem chi tiết trên bảng điều khiển Web.`
+                `❌ **Build Thất Bại!**\n\n📌 **Dự án:** ${repoUrl}\n🌿 **Nhánh:** ${branch}\n${icon} **Nền tảng:** ${platformName}\n⏱️ **ID:** ${buildId}`
             );
         }
         finishJob();
@@ -204,11 +229,76 @@ function processQueue() {
     buildProcess.on('error', (err) => {
         sendLog(`Failed to start subprocess: ${err.message}`, 'error');
         notifyTelegram(
-            `❌ **Build Lỗi!**\n\n📌 **Dự án:** ${repoUrl}\n🌿 **Nhánh:** ${branch}\n${icon} **Nền tảng:** ${platformName}\n⚠️ **Lỗi:** ${err.message}\n⏱️ **ID:** ${buildId}`
+            `❌ **Build Lỗi!**\n\n📌 ${repoUrl}\n⚠️ ${err.message}\n⏱️ ID: ${buildId}`
         );
         finishJob();
     });
 }
+
+// --- Task management ---
+
+app.get('/api/tasks', (req, res) => {
+    const tasks = [];
+
+    // Running builds
+    for (const [buildId, { job }] of activeBuilds) {
+        const elapsed = Math.floor((Date.now() - job.startTime) / 1000);
+        tasks.push({
+            id: buildId,
+            platform: job.platform,
+            repoUrl: job.repoUrl,
+            branch: job.branch || 'default',
+            status: 'running',
+            elapsed: `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`,
+        });
+    }
+
+    // Queued jobs
+    buildQueue.forEach((job, index) => {
+        tasks.push({
+            id: job.queueId,
+            platform: job.platform,
+            repoUrl: job.repoUrl,
+            branch: job.branch || 'default',
+            status: 'queued',
+            position: index + 1,
+        });
+    });
+
+    res.json({ tasks, maxConcurrent: MAX_CONCURRENT, active: activeBuilds.size });
+});
+
+app.post('/api/cancel', (req, res) => {
+    const { id } = req.body;
+    if (!id) return res.status(400).json({ error: 'Missing task id' });
+
+    // Cancel running build
+    const active = activeBuilds.get(id);
+    if (active) {
+        console.log(`🔪 Cancelling build: ${id}`);
+        try {
+            if (process.platform === 'win32') {
+                require('child_process').execSync(`taskkill /pid ${active.process.pid} /T /F`, { stdio: 'ignore' });
+            } else {
+                process.kill(-active.process.pid, 'SIGKILL');
+            }
+        } catch {}
+        active.job.sendLog('⛔ Build đã bị hủy bởi người dùng.', 'error');
+        notifyTelegram(`⛔ **Build Đã Hủy**\n\n📌 ${active.job.repoUrl}\n⏱️ ID: ${id}`);
+        return res.json({ success: true, message: 'Build cancelled' });
+    }
+
+    // Cancel queued job
+    const index = buildQueue.findIndex(j => j.queueId === id);
+    if (index !== -1) {
+        const removed = buildQueue.splice(index, 1)[0];
+        removed.sendLog('⛔ Build đã bị hủy khỏi hàng đợi.', 'error');
+        removed.res.end();
+        return res.json({ success: true, message: 'Queued job removed' });
+    }
+
+    res.status(404).json({ error: 'Task not found' });
+});
 
 app.post('/api/build', (req, res) => {
     const { platform, repoUrl, branch, token, lane } = req.body;
@@ -226,7 +316,8 @@ app.post('/api/build', (req, res) => {
         res.write(`data: ${JSON.stringify({ message, type })}\n\n`);
     };
 
-    const job = { platform, repoUrl, branch, token, lane, res, sendLog };
+    const queueId = `q_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const job = { queueId, platform, repoUrl, branch, token, lane, res, sendLog };
 
     req.on('close', () => {
         const index = buildQueue.indexOf(job);
@@ -236,14 +327,58 @@ app.post('/api/build', (req, res) => {
         }
     });
 
-    if (isBuilding) {
-        sendLog(`Đã đưa vào hàng đợi. Vị trí: ${buildQueue.length + 1}. Vui lòng chờ...`, 'info');
+    if (activeBuilds.size >= MAX_CONCURRENT) {
+        sendLog(`Đã đưa vào hàng đợi. Vị trí: ${buildQueue.length + 1}. Đang chạy ${activeBuilds.size}/${MAX_CONCURRENT} builds.`, 'info');
     }
 
     buildQueue.push(job);
     processQueue();
 });
 
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server is running at ${BASE_URL}`);
+app.listen(PORT, '0.0.0.0', async () => {
+    const publicIP = await getPublicIP();
+    const lanIP = getLanIP();
+    const hasNginx = process.env.NGINX === '1';
+    const portSuffix = hasNginx ? '' : `:${PORT}`;
+
+    if (publicIP && publicIP !== lanIP && !process.env.BASE_URL) {
+        BASE_URL = `http://${publicIP}${portSuffix}`;
+        console.log(`🌍 Public IP (VPS): ${publicIP}`);
+        console.log(`🏠 LAN IP: ${lanIP}`);
+    } else if (!process.env.BASE_URL) {
+        BASE_URL = `http://${lanIP}${portSuffix}`;
+        console.log(`🏠 LAN IP: ${lanIP}`);
+    }
+
+    if (hasNginx) {
+        console.log(`🌐 Server (Nginx):  http://${publicIP || lanIP}:80`);
+    }
+    console.log(`🖥️  Server (Node):   http://${lanIP}:${PORT}`);
+    if (publicIP && publicIP !== lanIP) {
+        console.log(`🌍 Server (Public): http://${publicIP}:${PORT}`);
+    }
+    console.log(`📲 Telegram link:   ${BASE_URL}`);
 });
+
+// --- Cleanup: kill build process when server stops ---
+function shutdown() {
+    console.log('\n🛑 Server shutting down...');
+    // Kill all running builds
+    for (const [buildId, { process: proc }] of activeBuilds) {
+        console.log(`🔪 Killing build: ${buildId}`);
+        try {
+            if (process.platform === 'win32') {
+                require('child_process').execSync(`taskkill /pid ${proc.pid} /T /F`, { stdio: 'ignore' });
+            } else {
+                process.kill(-proc.pid, 'SIGKILL');
+            }
+        } catch {}
+    }
+    activeBuilds.clear();
+    buildQueue.length = 0;
+    console.log(`✅ All ${activeBuilds.size} builds cancelled. Bye!`);
+    process.exit(0);
+}
+
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);

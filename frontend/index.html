@@ -48,7 +48,7 @@
                             <label class="platform-card active" data-platform="android">
                                 <span class="icon">🤖</span>
                                 <span>Android</span>
-                                <small>(Build qua Docker Linux)</small>
+                                <small>(Build native trên Host)</small>
                             </label>
                             <label class="platform-card" data-platform="ios">
                                 <span class="icon">🍏</span>
@@ -61,6 +61,16 @@
                     <button type="submit" id="buildBtn" class="btn primary">Bắt đầu Build</button>
                     <p class="note info">Lưu ý: Build iOS trên Docker Linux là không thể vì yêu cầu Xcode. Hệ thống sẽ build iOS trực tiếp trên môi trường macOS host của bạn.</p>
                 </form>
+            </div>
+
+            <div class="card tasks-section">
+                <div class="tasks-header">
+                    <h2>📋 Danh sách Build</h2>
+                    <button type="button" id="refreshTasksBtn" class="btn secondary" style="width:auto;padding:0 12px;font-size:0.85rem;">🔄 Refresh</button>
+                </div>
+                <div id="tasksList" class="tasks-list">
+                    <p class="no-tasks">Không có build nào đang chạy.</p>
+                </div>
             </div>
 
             <div class="card logs-section">
