@@ -108,11 +108,21 @@ app.post('/api/repos', async (req, res) => {
 });
 
 app.post('/api/detect', async (req, res) => {
-    const { repoUrl, branch } = req.body;
+    const { repoUrl, branch, token } = req.body;
     if (!repoUrl) return res.status(400).json({ error: 'Missing repoUrl' });
 
     try {
-        const { projectType, flavors } = await detectProjectType(repoUrl, branch);
+        // Inject token for private repos
+        let cloneUrl = repoUrl;
+        if (token) {
+            try {
+                const urlObj = new URL(repoUrl);
+                urlObj.username = 'oauth2';
+                urlObj.password = token;
+                cloneUrl = urlObj.toString();
+            } catch {}
+        }
+        const { projectType, flavors } = await detectProjectType(cloneUrl, branch);
         const isMac = process.platform === 'darwin';
         const canBuildIos = isMac;
 
@@ -159,16 +169,29 @@ function parseFlavors(sourceDir) {
         if (!fs.existsSync(gFile)) continue;
         const content = fs.readFileSync(gFile, 'utf8');
 
-        // Match productFlavors block and extract flavor names
-        const match = content.match(/productFlavors\s*\{([\s\S]*?)\n\s{4}\}/);
-        if (!match) continue;
-
+        // Match productFlavors block — find matching closing brace by counting
+        const startIdx = content.indexOf('productFlavors');
+        if (startIdx === -1) continue;
+        const braceStart = content.indexOf('{', startIdx);
+        if (braceStart === -1) continue;
+        let depth = 0;
+        let braceEnd = -1;
+        for (let i = braceStart; i < content.length; i++) {
+            if (content[i] === '{') depth++;
+            else if (content[i] === '}') { depth--; if (depth === 0) { braceEnd = i; break; } }
+        }
+        if (braceEnd === -1) continue;
+        const match = [null, content.substring(braceStart + 1, braceEnd)];
         const block = match[1];
         // Groovy: flavorName { ... }  or  Kts: create("flavorName") { ... }
         const flavors = [];
-        const groovyMatches = block.matchAll(/^\s{8}(\w+)\s*\{/gm);
+        // Match any indented identifier followed by {
+        const groovyMatches = block.matchAll(/^\s+(\w+)\s*\{/gm);
         for (const m of groovyMatches) {
-            flavors.push(m[1]);
+            // Skip keywords that aren't flavor names
+            if (!['productFlavors','android','buildTypes','defaultConfig','signingConfigs','compileOptions','kotlinOptions','buildFeatures','packaging','lint'].includes(m[1])) {
+                flavors.push(m[1]);
+            }
         }
         const ktsMatches = block.matchAll(/create\("(\w+)"\)/g);
         for (const m of ktsMatches) {

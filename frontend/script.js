@@ -164,7 +164,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         fetch('/api/detect', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ repoUrl: e.target.value, branch: '' })
+                            body: JSON.stringify({ repoUrl: e.target.value, branch: '', token })
                         })
                     ]);
 
