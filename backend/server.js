@@ -519,7 +519,6 @@ async function startBuild(job) {
         return;
     }
 
-    const platformEmoji = platform === 'android' ? '🤖' : '🍏';
     sendLog(`${platformEmoji} Build: ${platform.toUpperCase()}`, 'success');
     job.platform = platform;
 
