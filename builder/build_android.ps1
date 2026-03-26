@@ -40,29 +40,64 @@ try {
     $buildSuccess = $true
 } catch {
     Write-Host "[WARN] First build attempt failed: $_"
+    $retried = $false
 
-    # Retry with compileSdk fix if needed
     $logContent = Get-Content "$env:TEMP\build_log_$BuildId.txt" -ErrorAction SilentlyContinue
-    $requiredSdk = ($logContent | Select-String 'compile against version (\d+)' |
-        ForEach-Object { [int]$_.Matches.Groups[1].Value } |
-        Measure-Object -Maximum).Maximum
+    $logText = $logContent -join "`n"
 
-    if ($requiredSdk -gt 0) {
-        Write-Host "[RETRY] Retrying with compileSdk = $requiredSdk..."
-        Get-ChildItem -Recurse -Include "build.gradle","build.gradle.kts" | ForEach-Object {
-            $c = Get-Content $_.FullName -Raw
-            if ($c -match 'compileSdk\w*\s*[=]?\s*(\d+)') {
-                $cur = [int]$Matches[1]
-                if ($cur -lt $requiredSdk) {
-                    Set-Content $_.FullName ($c -replace "compileSdk\w*(\s*[=]?\s*)$cur", "compileSdk`$1$requiredSdk") -NoNewline
+    # --- Fix 1: missingDimensionStrategy for library modules missing flavor dimension ---
+    $flavorMatch = [regex]::Match($logText, "ProductFlavor:(\w+).*with value '(\w+)'")
+    if ($flavorMatch.Success) {
+        $dimension = $flavorMatch.Groups[1].Value
+        $flavorValue = $flavorMatch.Groups[2].Value
+        Write-Host "[RETRY] Injecting missingDimensionStrategy('$dimension', '$flavorValue') into library modules..."
+        Get-ChildItem -Recurse -Include "build.gradle","build.gradle.kts" |
+            Where-Object { $_.FullName -notmatch '\\app\\' -and $_.FullName -notmatch '/app/' } |
+            ForEach-Object {
+                $c = Get-Content $_.FullName -Raw
+                if ($c -match 'android\s*\{' -and $c -notmatch 'missingDimensionStrategy') {
+                    if ($_.Name -eq "build.gradle.kts") {
+                        $inject = "`n    defaultConfig {`n        missingDimensionStrategy(`"$dimension`", `"$flavorValue`")`n    }"
+                    } else {
+                        $inject = "`n    defaultConfig {`n        missingDimensionStrategy '$dimension', '$flavorValue'`n    }"
+                    }
+                    $patched = $c -replace '(android\s*\{)', "`$1$inject"
+                    Set-Content $_.FullName $patched -NoNewline
+                    Write-Host "[OK] Patched: $($_.FullName)"
                 }
             }
-        }
         try {
             Build-Android -Lane $Lane
             $buildSuccess = $true
+            $retried = $true
         } catch {
-            Write-Host "[ERROR] Retry also failed: $_"
+            Write-Host "[WARN] Retry after flavor patch failed: $_"
+        }
+    }
+
+    # --- Fix 2: compileSdk version bump ---
+    if (-not $retried) {
+        $requiredSdk = ($logContent | Select-String 'compile against version (\d+)' |
+            ForEach-Object { [int]$_.Matches.Groups[1].Value } |
+            Measure-Object -Maximum).Maximum
+
+        if ($requiredSdk -gt 0) {
+            Write-Host "[RETRY] Retrying with compileSdk = $requiredSdk..."
+            Get-ChildItem -Recurse -Include "build.gradle","build.gradle.kts" | ForEach-Object {
+                $c = Get-Content $_.FullName -Raw
+                if ($c -match 'compileSdk\w*\s*[=]?\s*(\d+)') {
+                    $cur = [int]$Matches[1]
+                    if ($cur -lt $requiredSdk) {
+                        Set-Content $_.FullName ($c -replace "compileSdk\w*(\s*[=]?\s*)$cur", "compileSdk`$1$requiredSdk") -NoNewline
+                    }
+                }
+            }
+            try {
+                Build-Android -Lane $Lane
+                $buildSuccess = $true
+            } catch {
+                Write-Host "[ERROR] Retry also failed: $_"
+            }
         }
     }
 }

@@ -569,7 +569,6 @@ async function startBuild(job) {
 
     let lastOutputTime = Date.now();
 
-    let cloneNotified = false;
     const handleOutput = (data) => {
         lastOutputTime = Date.now();
         const text = data.toString();
@@ -579,15 +578,6 @@ async function startBuild(job) {
         }
         lines.forEach(line => {
             sendLog(line, 'log');
-            // Notify Telegram when clone starts
-            if (!cloneNotified && /STEP: Git clone/i.test(line)) {
-                cloneNotified = true;
-                const platformEmoji = platform === 'android' ? '🤖' : '🍏';
-                const buildTypeLabel = lane === 'bundle' ? 'AAB' : 'APK';
-                notifyTelegram(
-                    `${platformEmoji} *Đang Build...*\n\n📌 *Dự án:* ${repoNameShort}\n🌿 *Nhánh:* ${branch || 'default'}\n📦 *Loại:* ${buildTypeLabel}${flavor ? `\n🎨 *Flavor:* ${flavor}` : ''}`
-                );
-            }
         });
     };
 
