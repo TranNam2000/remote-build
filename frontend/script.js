@@ -323,6 +323,17 @@ document.addEventListener('DOMContentLoaded', () => {
         detectedProjectType = null;
     }
 
+    // Populate flavor dropdown
+    function populateFlavors(flavors) {
+        flavorSelect.innerHTML = '';
+        flavors.forEach(f => {
+            const opt = document.createElement('option');
+            opt.value = f;
+            opt.textContent = f;
+            flavorSelect.appendChild(opt);
+        });
+    }
+
     // Chạy detect và cập nhật platform + flavor
     async function detectAndShowOptions(repoUrl, branch, token) {
         try {
@@ -338,34 +349,39 @@ document.addEventListener('DOMContentLoaded', () => {
             isMacOS = detectData.isMac;
             detectedFlavors = detectData.flavors || [];
 
-            appendLog(`📋 Project Type: ${detectedProjectType || 'unknown'}`, detectedProjectType ? 'success' : 'warn');
-
-            // Cập nhật option platform dựa theo loại project
-            platformSelect.innerHTML = '';
-            if (detectedProjectType === 'flutter' && isMacOS) {
-                platformSelect.innerHTML = `<option value="android">🤖 Android</option><option value="ios">🍏 iOS</option>`;
-            } else if (detectedProjectType === 'ios') {
-                platformSelect.innerHTML = `<option value="ios">🍏 iOS</option>`;
-            } else {
-                // android hoặc flutter (non-mac) → chỉ Android
-                platformSelect.innerHTML = `<option value="android">🤖 Android</option>`;
-            }
-            platformSelectGroup.style.display = 'block';
-
-            // Nếu là Android và detect được flavor thì hiện luôn
             if (detectedFlavors.length > 0) {
                 appendLog(`🎨 Môi trường build: ${detectedFlavors.join(', ')}`, 'success');
-                flavorSelect.innerHTML = '';
-                detectedFlavors.forEach(f => {
-                    const opt = document.createElement('option');
-                    opt.value = f;
-                    opt.textContent = f;
-                    flavorSelect.appendChild(opt);
-                });
+                populateFlavors(detectedFlavors);
             }
 
-            // Trigger platform change để hiện build type + flavor
-            platformSelect.dispatchEvent(new Event('change'));
+            if (detectedProjectType === 'flutter') {
+                // Flutter → luôn cho chọn Android hoặc iOS
+                appendLog(`📋 Flutter project — chọn platform build.`, 'success');
+                platformSelect.innerHTML = `<option value="android">🤖 Android</option><option value="ios">🍏 iOS</option>`;
+                platformSelectGroup.style.display = 'block';
+                // Chờ user chọn platform rồi mới hiện build type + flavor
+            } else if (detectedProjectType === 'android') {
+                // Native Android → tự động chọn Android, không cần dropdown platform
+                appendLog(`📋 Android project — tự động chọn platform Android.`, 'success');
+                platformSelectGroup.style.display = 'none';
+                platformSelect.innerHTML = `<option value="android">🤖 Android</option>`;
+                platformSelect.value = 'android';
+                // Hiện thẳng build type + flavor
+                buildTypeGroup.style.display = 'block';
+                if (detectedFlavors.length > 0) flavorGroup.style.display = 'block';
+            } else if (detectedProjectType === 'ios') {
+                // iOS only
+                appendLog(`📋 iOS project.`, 'success');
+                platformSelect.innerHTML = `<option value="ios">🍏 iOS</option>`;
+                platformSelect.value = 'ios';
+                platformSelectGroup.style.display = 'none';
+                buildTypeGroup.style.display = 'none';
+                flavorGroup.style.display = 'none';
+            } else {
+                appendLog(`⚠️ Không xác định được loại project.`, 'warn');
+                platformSelect.innerHTML = `<option value="android">🤖 Android</option><option value="ios">🍏 iOS</option>`;
+                platformSelectGroup.style.display = 'block';
+            }
         } catch(err) {
             appendLog(`Lỗi detect: ${err.message}`, 'error');
         }

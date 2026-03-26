@@ -343,7 +343,9 @@ optimize_gradle() {
     fi
     if [ -n "$aapt2_path" ]; then
         echo "Using aapt2: $aapt2_path"
-        echo "android.aapt2FromMavenOverride=$aapt2_path" >> "$props"
+        if ! grep -q '^android\.aapt2FromMavenOverride=' "$props" 2>/dev/null; then
+            echo "android.aapt2FromMavenOverride=$aapt2_path" >> "$props"
+        fi
     else
         echo "⚠️  No aapt2 found. Build may fail."
     fi
@@ -369,8 +371,8 @@ optimize_gradle() {
     [ "$workers_max" -lt 1 ] && workers_max=1
     echo "✅ Detected: ${cpu_cores} cores, ${total_mb}MB total, ${avail_mb}MB free -> heap=${heap_mb}m, workers=${workers_max}"
 
-    echo "android.useAndroidX=true" >> "$props"
-    echo "android.nonTransitiveRClass=true" >> "$props"
+    grep -q '^android\.useAndroidX=' "$props" 2>/dev/null || echo "android.useAndroidX=true" >> "$props"
+    grep -q '^android\.nonTransitiveRClass=' "$props" 2>/dev/null || echo "android.nonTransitiveRClass=true" >> "$props"
     echo "org.gradle.daemon=false" >> "$props"
     echo "org.gradle.jvmargs=-Xmx${heap_mb}m -XX:MaxMetaspaceSize=512m -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -XX:+ExitOnOutOfMemoryError" >> "$props"
     echo "org.gradle.parallel=true" >> "$props"

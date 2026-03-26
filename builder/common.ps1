@@ -551,7 +551,10 @@ function Optimize-Gradle {
     }
     if ($aapt2) {
         $aapt2Path = $aapt2.FullName -replace '\\', '/'
-        Add-Content $props "android.aapt2FromMavenOverride=$aapt2Path"
+        $existingProps = if (Test-Path $props) { Get-Content $props -Raw } else { "" }
+        if ($existingProps -notmatch 'android\.aapt2FromMavenOverride') {
+            Add-Content $props "android.aapt2FromMavenOverride=$aapt2Path"
+        }
         Write-Host "Using aapt2: $aapt2Path"
     } else {
         Write-Host "[WARN] No aapt2 found. Build may fail."
@@ -592,12 +595,27 @@ function Optimize-Gradle {
     Add-Content $props "kotlin.compiler.execution.strategy=in-process"
     Add-Content $props "org.gradle.workers.max=$workersMax"
 
-    # Create local.properties with sdk.dir for Gradle (both root and android/)
+    # Update local.properties with sdk.dir (preserve existing keys, only update/add sdk.dir)
     if ($env:ANDROID_HOME) {
         $sdkPath = $env:ANDROID_HOME -replace '\\', '/'
-        "sdk.dir=$sdkPath" | Set-Content "local.properties" -Encoding UTF8
+        function Update-LocalProperties([string]$filePath) {
+            $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+            if (Test-Path $filePath) {
+                $lines = Get-Content $filePath
+                $found = $false
+                $updated = $lines | ForEach-Object {
+                    if ($_ -match '^sdk\.dir\s*=') { $found = $true; "sdk.dir=$sdkPath" }
+                    else { $_ }
+                }
+                if (-not $found) { $updated += "sdk.dir=$sdkPath" }
+                [System.IO.File]::WriteAllLines((Resolve-Path $filePath).Path, $updated, $utf8NoBom)
+            } else {
+                [System.IO.File]::WriteAllText($filePath, "sdk.dir=$sdkPath`n", $utf8NoBom)
+            }
+        }
+        Update-LocalProperties "local.properties"
         if (Test-Path "android") {
-            "sdk.dir=$sdkPath" | Set-Content "android\local.properties" -Encoding UTF8
+            Update-LocalProperties "android\local.properties"
         }
         Write-Host "[OK] local.properties: sdk.dir=$sdkPath"
     }
