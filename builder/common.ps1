@@ -346,11 +346,18 @@ function Download-GitHubZip {
     $zipPath = Join-Path $DestDir "_download_$(Split-Path $FolderName -Leaf).zip"
     $extractPath = Join-Path $DestDir "_extract_$(Split-Path $FolderName -Leaf)"
     Invoke-WebRequest -Uri $zipUrl -Headers $headers -OutFile $zipPath -MaximumRedirection 10 -UseBasicParsing
-    # Enable long paths support
-    try { Set-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" LongPathsEnabled 1 -ErrorAction SilentlyContinue } catch {}
-    # Use .NET ZipFile instead of Expand-Archive (handles long paths better)
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
-    [System.IO.Compression.ZipFile]::ExtractToDirectory($zipPath, $extractPath)
+    # Cleanup extract dir if leftover from failed run
+    if (Test-Path $extractPath) { Remove-Item -Recurse -Force $extractPath }
+    New-Item -ItemType Directory -Force -Path $extractPath | Out-Null
+    # Try 7-Zip first (no path limit), fallback to .NET ZipFile
+    $sz = Get-Command '7z' -ErrorAction SilentlyContinue
+    if (-not $sz) { $sz = Get-Item 'C:\Program Files\7-Zip\7z.exe' -ErrorAction SilentlyContinue }
+    if ($sz) {
+        & $sz.Source x $zipPath "-o$extractPath" -y | Out-Null
+    } else {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        [System.IO.Compression.ZipFile]::ExtractToDirectory($zipPath, $extractPath)
+    }
     Remove-Item $zipPath -Force
     $extracted = Get-ChildItem $extractPath -Directory | Select-Object -First 1
     if (-not $extracted) { throw "Extracted folder not found for $RepoFullName" }

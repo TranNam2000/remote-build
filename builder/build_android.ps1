@@ -34,16 +34,22 @@ $global:Flavor = $Flavor
 Write-Host "🎨 Flavor: $( if ($Flavor) { $Flavor } else { '(none)' } )"
 
 # Build
+$logFile = "$WorkDir\build.log"
 $buildSuccess = $false
+Start-Transcript -Path $logFile -Append -ErrorAction SilentlyContinue
 try {
     Build-Android -Lane $Lane
     $buildSuccess = $true
 } catch {
     Write-Host "[WARN] First build attempt failed: $_"
     $retried = $false
+} finally {
+    Stop-Transcript -ErrorAction SilentlyContinue
+}
 
-    $logContent = Get-Content "$env:TEMP\build_log_$BuildId.txt" -ErrorAction SilentlyContinue
-    $logText = $logContent -join "`n"
+if (-not $buildSuccess) {
+    $logContent = Get-Content $logFile -ErrorAction SilentlyContinue
+    $logText = ($logContent -join "`n") -replace '\x1b\[[0-9;]*m', ''
 
     # --- Fix 1: missingDimensionStrategy for library modules missing flavor dimension ---
     $flavorMatch = [regex]::Match($logText, "ProductFlavor:(\w+).*with value '(\w+)'")
