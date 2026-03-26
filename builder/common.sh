@@ -207,7 +207,7 @@ clone_repo() {
         declare -A pinned_shas=()
         local tree_json
         tree_json=$(curl -fsSL "${api_headers[@]}" \
-            "https://api.github.com/repos/$repo_full/git/trees/$ref" 2>/dev/null || true)
+            "https://api.github.com/repos/$repo_full/git/trees/$ref?recursive=1" 2>/dev/null || true)
         while IFS= read -r item_path && IFS= read -r item_sha; do
             pinned_shas["$item_path"]="$item_sha"
         done < <(echo "$tree_json" | python3 -c "

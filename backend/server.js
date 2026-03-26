@@ -361,68 +361,14 @@ async function detectProjectTypeViaAPI(repoUrl, branch, token) {
 }
 
 async function detectProjectType(repoUrl, branch) {
-    const tempDir = path.join(os.tmpdir(), `detect_${Date.now()}`);
+    // Extract token from URL if present
+    let token = null;
+    let cleanUrl = repoUrl;
     try {
-        // Shallow clone for fast detection
-        const cloneArgs = ['clone', '--depth', '1'];
-        if (branch) cloneArgs.push('--branch', branch);
-        cloneArgs.push(repoUrl, 'source');
-
-        // Ensure temp dir exists
-        fs.mkdirSync(tempDir, { recursive: true });
-
-        const cloneProc = spawn('git', cloneArgs, {
-            cwd: tempDir,
-            stdio: 'pipe'
-        });
-
-        await new Promise((resolve, reject) => {
-            cloneProc.on('close', (code) => {
-                if (code === 0) resolve();
-                else reject(new Error(`Git clone failed with code ${code}`));
-            });
-            cloneProc.on('error', reject);
-        });
-
-        const sourceDir = path.join(tempDir, 'source');
-        let projectType = null;
-        let flavors = [];
-
-        // Check for project type
-        if (fs.existsSync(path.join(sourceDir, 'pubspec.yaml'))) {
-            projectType = 'flutter';
-        } else if (fs.existsSync(path.join(sourceDir, 'build.gradle')) ||
-            fs.existsSync(path.join(sourceDir, 'build.gradle.kts')) ||
-            fs.existsSync(path.join(sourceDir, 'app/build.gradle')) ||
-            fs.existsSync(path.join(sourceDir, 'app/build.gradle.kts')) ||
-            fs.existsSync(path.join(sourceDir, 'settings.gradle')) ||
-            fs.existsSync(path.join(sourceDir, 'settings.gradle.kts')) ||
-            fs.existsSync(path.join(sourceDir, 'gradlew'))) {
-            projectType = 'android';
-        } else if (fs.existsSync(path.join(sourceDir, 'ios/Runner.xcodeproj')) ||
-            fs.existsSync(path.join(sourceDir, 'ios/Runner.xcworkspace'))) {
-            projectType = 'ios';
-        }
-
-        // Parse flavors for Android/Flutter projects
-        if (projectType === 'flutter' || projectType === 'android') {
-            flavors = parseFlavors(sourceDir);
-        }
-
-        return { projectType, flavors };
-    } catch (error) {
-        console.error('Detection error:', error.message);
-        return { projectType: null, flavors: [] };
-    } finally {
-        // Cleanup temp dir
-        try {
-            if (process.platform === 'win32') {
-                require('child_process').execSync(`rmdir /s /q "${tempDir}"`, { stdio: 'ignore' });
-            } else {
-                require('child_process').execSync(`rm -rf "${tempDir}"`, { stdio: 'ignore' });
-            }
-        } catch { }
-    }
+        const u = new URL(repoUrl);
+        if (u.password) { token = u.password; cleanUrl = repoUrl.replace(`${u.username}:${u.password}@`, ''); }
+    } catch { }
+    return detectProjectTypeViaAPI(cleanUrl, branch, token);
 }
 
 // --- Build System (parallel) ---

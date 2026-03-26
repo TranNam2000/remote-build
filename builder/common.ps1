@@ -395,7 +395,7 @@ function Clone-Repo {
         if ($token) { $apiHeaders["Authorization"] = "token $token" }
         $pinnedShas = @{}
         try {
-            $treeUrl = "https://api.github.com/repos/$repoFullName/git/trees/$ref"
+            $treeUrl = "https://api.github.com/repos/$repoFullName/git/trees/$ref`?recursive=1"
             $treeRes = Invoke-RestMethod -Uri $treeUrl -Headers $apiHeaders
             foreach ($item in $treeRes.tree) {
                 if ($item.type -eq "commit") { $pinnedShas[$item.path] = $item.sha }
