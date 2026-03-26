@@ -9,7 +9,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $BuilderDir = $PSScriptRoot
-$WorkDir = "$env:TEMP\flutter_build_$BuildId"
+$WorkDir = "C:\b\$BuildId"
 $OutputDir = "$BuilderDir\completed_builds\$BuildId"
 
 . "$PSScriptRoot\common.ps1"
