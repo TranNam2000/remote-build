@@ -499,9 +499,23 @@ async function startBuild(job) {
     }
 
     const buildTypeLabel = lane === 'bundle' ? 'AAB' : lane === 'release' ? 'APK' : lane ? lane.toUpperCase() : '';
-    notifyTelegram(
-        `🚀 *Bắt đầu Build!*\n\n📌 *Dự án:* ${repoNameShort}\n🌿 *Nhánh:* ${branch || 'default'}\n${platform === 'android' ? '🤖' : '🍏'} *Platform:* ${(platform || 'auto').toUpperCase()}${buildTypeLabel ? ` (${buildTypeLabel})` : ''}${flavor ? `\n🌿 *Môi trường:* ${flavor}` : ''}`
-    );
+    const telegramMsg = `🚀 *Bắt đầu Build!*\n\n📌 *Dự án:* ${repoNameShort}\n🌿 *Nhánh:* ${branch || 'default'}\n${platform === 'android' ? '🤖' : '🍏'} *Platform:* ${(platform || 'auto').toUpperCase()}${buildTypeLabel ? ` (${buildTypeLabel})` : ''}${flavor ? `\n🌿 *Môi trường:* ${flavor}` : ''}`;
+    sendLog(`📨 Gửi thông báo Telegram...`, 'info');
+    try {
+        const tgRes = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, parse_mode: 'Markdown', text: telegramMsg })
+        });
+        const tgData = await tgRes.json();
+        if (tgData.ok) {
+            sendLog(`✅ Telegram: đã gửi`, 'info');
+        } else {
+            sendLog(`⚠️ Telegram lỗi: ${tgData.description}`, 'warn');
+        }
+    } catch (e) {
+        sendLog(`⚠️ Telegram failed: ${e.message}`, 'warn');
+    }
 
     // Validate platform compatibility
     if (platform === 'ios' && process.platform !== 'darwin') {
