@@ -578,8 +578,7 @@ function Optimize-Gradle {
     $heapCap = [math]::Min([math]::Floor($totalMB * 0.6), 8192)
     if ($heapMB -lt 1024) { $heapMB = 1024 }
     if ($heapMB -gt $heapCap) { $heapMB = $heapCap }
-    # Use all logical cores minus 1 (leave 1 for OS), minimum 1
-    $workersMax = [math]::Max(1, $cpuCores - 1)
+    $workersMax = 2
     Write-Host "[OK] Detected: ${cpuCores} cores, ${totalMB}MB total, ${availMB}MB free -> heap=${heapMB}m, workers=${workersMax}"
 
     # Ensure essential Android properties exist (add only if missing in ALL props files)

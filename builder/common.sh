@@ -369,9 +369,7 @@ optimize_gradle() {
     [ "$heap_cap" -gt 8192 ] && heap_cap=8192
     [ "$heap_mb" -lt 1024 ] && heap_mb=1024
     [ "$heap_mb" -gt "$heap_cap" ] && heap_mb=$heap_cap
-    # Use all logical cores minus 1 (leave 1 for OS), minimum 1
-    local workers_max=$(( cpu_cores - 1 ))
-    [ "$workers_max" -lt 1 ] && workers_max=1
+    local workers_max=2
     echo "✅ Detected: ${cpu_cores} cores, ${total_mb}MB total, ${avail_mb}MB free -> heap=${heap_mb}m, workers=${workers_max}"
 
     grep -q '^android\.useAndroidX=' "$props" 2>/dev/null || echo "android.useAndroidX=true" >> "$props"
