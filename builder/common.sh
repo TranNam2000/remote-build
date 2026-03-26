@@ -200,21 +200,45 @@ clone_repo() {
     # Handle submodules via API
     if [ -f ".gitmodules" ]; then
         echo "[INFO] Submodules detected, downloading via API..."
+        local api_headers=(-H "User-Agent: Flutter-Remote-Builder")
+        [ -n "$token" ] && api_headers+=(-H "Authorization: token $token")
+
+        # Fetch pinned commit SHAs from GitHub tree API
+        declare -A pinned_shas=()
+        local tree_json
+        tree_json=$(curl -fsSL "${api_headers[@]}" \
+            "https://api.github.com/repos/$repo_full/git/trees/$ref" 2>/dev/null || true)
+        while IFS= read -r item_path && IFS= read -r item_sha; do
+            pinned_shas["$item_path"]="$item_sha"
+        done < <(echo "$tree_json" | python3 -c "
+import sys,json
+data=json.load(sys.stdin)
+for t in data.get('tree',[]):
+    if t.get('type')=='commit':
+        print(t['path']); print(t['sha'])
+" 2>/dev/null || true)
+
+        # Parse .gitmodules by block
+        local sm_path="" sm_url=""
         while IFS= read -r line; do
-            [[ "$line" =~ ^[[:space:]]*path[[:space:]]*=[[:space:]]*(.+) ]] && sm_path="${BASH_REMATCH[1]}"
-            if [[ "$line" =~ ^[[:space:]]*url[[:space:]]*=[[:space:]]*(.+) ]]; then
-                local sm_url="${BASH_REMATCH[1]}"
+            if [[ "$line" =~ ^\[submodule ]]; then
+                sm_path=""; sm_url=""
+            elif [[ "$line" =~ ^[[:space:]]*path[[:space:]]*=[[:space:]]*(.+) ]]; then
+                sm_path="${BASH_REMATCH[1]// /}"
+            elif [[ "$line" =~ ^[[:space:]]*url[[:space:]]*=[[:space:]]*(.+) ]]; then
+                sm_url="${BASH_REMATCH[1]// /}"
                 sm_url=$(echo "$sm_url" | sed 's|git@github\.com:|https://github.com/|')
                 local sm_repo
                 sm_repo=$(echo "$sm_url" | grep -oP 'github\.com[:/]\K[\w.\-]+/[\w.\-]+?(?=\.git|$)')
                 if [ -n "$sm_repo" ] && [ -n "$sm_path" ]; then
+                    local sm_ref="${pinned_shas[$sm_path]:-HEAD}"
+                    echo "[INFO] Submodule: $sm_path @ $sm_ref"
                     local sm_parent; sm_parent=$(dirname "$sm_path")
                     local sm_name;   sm_name=$(basename "$sm_path")
                     mkdir -p "$sm_parent"
-                    download_github_zip "$sm_repo" "HEAD" "$token" "$sm_parent" "$sm_name"
+                    download_github_zip "$sm_repo" "$sm_ref" "$token" "$sm_parent" "$sm_name"
                     echo "[OK] Submodule: $sm_path"
                 fi
-                sm_path=""
             fi
         done < .gitmodules
         echo "[OK] All submodules downloaded"

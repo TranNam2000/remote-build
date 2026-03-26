@@ -389,17 +389,36 @@ function Clone-Repo {
     if (Test-Path ".gitmodules") {
         Write-Host "[INFO] Submodules detected, downloading via API..."
         $gmContent = Get-Content ".gitmodules" -Raw
-        $smMatches = [regex]::Matches($gmContent, '(?ms)path\s*=\s*(.+?)\s*\n\s*url\s*=\s*(.+)')
-        foreach ($sm in $smMatches) {
-            $smPath = $sm.Groups[1].Value.Trim()
-            $smUrl  = $sm.Groups[2].Value.Trim() -replace '^git@github\.com:', 'https://github.com/'
+
+        # Get pinned commit SHAs from GitHub API tree
+        $apiHeaders = @{ "User-Agent" = "Flutter-Remote-Builder" }
+        if ($token) { $apiHeaders["Authorization"] = "token $token" }
+        $pinnedShas = @{}
+        try {
+            $treeUrl = "https://api.github.com/repos/$repoFullName/git/trees/$ref"
+            $treeRes = Invoke-RestMethod -Uri $treeUrl -Headers $apiHeaders
+            foreach ($item in $treeRes.tree) {
+                if ($item.type -eq "commit") { $pinnedShas[$item.path] = $item.sha }
+            }
+        } catch { Write-Host "[WARN] Could not fetch tree for pinned SHAs: $_" }
+
+        # Parse .gitmodules by block
+        $blocks = $gmContent -split '(?m)^\[submodule\s'
+        foreach ($block in $blocks) {
+            if (-not $block.Trim()) { continue }
+            $smPath = if ($block -match '(?m)^\s*path\s*=\s*(.+)') { $Matches[1].Trim() } else { $null }
+            $smUrl  = if ($block -match '(?m)^\s*url\s*=\s*(.+)')  { $Matches[1].Trim() } else { $null }
+            if (-not $smPath -or -not $smUrl) { continue }
+            $smUrl = $smUrl -replace '^git@github\.com:', 'https://github.com/'
             $smM = [regex]::Match($smUrl, 'github\.com[:/]([\w.\-]+/[\w.\-]+?)(?:\.git)?$')
             if (-not $smM.Success) { Write-Host "[WARN] Skipping non-GitHub submodule: $smUrl"; continue }
             $smRepo = $smM.Groups[1].Value
-            $smDest = Join-Path (Get-Location) $smPath
+            $smRef  = if ($pinnedShas.ContainsKey($smPath)) { $pinnedShas[$smPath] } else { "HEAD" }
+            Write-Host "[INFO] Submodule: $smPath @ $smRef"
+            $smDest   = Join-Path (Get-Location) $smPath
             $smParent = Split-Path $smDest
             New-Item -ItemType Directory -Force -Path $smParent | Out-Null
-            Download-GitHubZip -RepoFullName $smRepo -Ref "HEAD" -Token $token -DestDir $smParent -FolderName (Split-Path $smPath -Leaf)
+            Download-GitHubZip -RepoFullName $smRepo -Ref $smRef -Token $token -DestDir $smParent -FolderName (Split-Path $smPath -Leaf)
             Write-Host "[OK] Submodule: $smPath"
         }
         Write-Host "[OK] All submodules downloaded"
