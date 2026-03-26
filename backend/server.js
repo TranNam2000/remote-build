@@ -756,21 +756,26 @@ async function startBuild(job) {
                     const tempDir = process.platform === 'win32'
                         ? path.join(process.env.TEMP || '', `flutter_build_${buildId}`, 'source_code')
                         : path.join('/tmp', `flutter_build_${buildId}`, 'source_code');
-                    const pubspec = path.join(tempDir, 'pubspec.yaml');
-                    const gradleFile = path.join(tempDir, 'app', 'build.gradle');
-                    const gradleKts = path.join(tempDir, 'app', 'build.gradle.kts');
-                    if (fs.existsSync(pubspec)) {
-                        const content = fs.readFileSync(pubspec, 'utf8');
-                        const m = content.match(/version:\s*(\S+)/);
-                        if (m) versionInfo = m[1].split('+')[0];
-                    } else if (fs.existsSync(gradleFile)) {
-                        const content = fs.readFileSync(gradleFile, 'utf8');
-                        const vn = content.match(/versionName\s+["']([^"']+)["']/);
-                        if (vn) versionInfo = vn[1];
-                    } else if (fs.existsSync(gradleKts)) {
-                        const content = fs.readFileSync(gradleKts, 'utf8');
-                        const vn = content.match(/versionName\s*=\s*"([^"]+)"/);
-                        if (vn) versionInfo = vn[1];
+                    // Tìm version theo thứ tự ưu tiên
+                    const candidates = [
+                        { file: path.join(tempDir, 'pubspec.yaml'), type: 'flutter' },
+                        { file: path.join(tempDir, 'app', 'build.gradle.kts'), type: 'gradle' },
+                        { file: path.join(tempDir, 'app', 'build.gradle'), type: 'gradle' },
+                        { file: path.join(tempDir, 'android', 'app', 'build.gradle.kts'), type: 'gradle' },
+                        { file: path.join(tempDir, 'android', 'app', 'build.gradle'), type: 'gradle' },
+                    ];
+                    for (const { file, type } of candidates) {
+                        if (!fs.existsSync(file)) continue;
+                        const content = fs.readFileSync(file, 'utf8');
+                        if (type === 'flutter') {
+                            const m = content.match(/^version:\s*(\S+)/m);
+                            if (m) { versionInfo = m[1].split('+')[0]; break; }
+                        } else {
+                            // Groovy: versionName "x.x.x" hoặc versionName 'x.x.x'
+                            // Kotlin DSL: versionName = "x.x.x" hoặc versionName("x.x.x")
+                            const vn = content.match(/versionName\s*[=(]?\s*["']([^"']+)["']/);
+                            if (vn) { versionInfo = vn[1]; break; }
+                        }
                     }
                 } catch(e) { console.log('Version detection failed:', e.message); }
                 const versionLine = versionInfo ? `\n📦 **Version:** ${versionInfo}` : '';
