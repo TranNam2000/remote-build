@@ -336,28 +336,73 @@ function Setup-Prerequisites {
     }
 }
 
-# --- Git clone ---
+# --- GitHub API download helper ---
+function Download-GitHubZip {
+    param([string]$RepoFullName, [string]$Ref, [string]$Token, [string]$DestDir, [string]$FolderName)
+    $headers = @{ "User-Agent" = "Flutter-Remote-Builder" }
+    if ($Token) { $headers["Authorization"] = "token $Token" }
+    $zipUrl = "https://api.github.com/repos/$RepoFullName/zipball/$Ref"
+    Write-Host "[INFO] Downloading $RepoFullName @ $Ref ..."
+    $zipPath = Join-Path $DestDir "_download_$(Split-Path $FolderName -Leaf).zip"
+    $extractPath = Join-Path $DestDir "_extract_$(Split-Path $FolderName -Leaf)"
+    Invoke-WebRequest -Uri $zipUrl -Headers $headers -OutFile $zipPath -MaximumRedirection 10 -UseBasicParsing
+    Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
+    Remove-Item $zipPath -Force
+    $extracted = Get-ChildItem $extractPath -Directory | Select-Object -First 1
+    if (-not $extracted) { throw "Extracted folder not found for $RepoFullName" }
+    $dest = Join-Path $DestDir $FolderName
+    if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
+    Move-Item $extracted.FullName $dest
+    Remove-Item $extractPath -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# --- Git clone (via GitHub API) ---
 function Clone-Repo {
     param([string]$RepoUrl, [string]$Branch, [string]$WorkDir)
     Write-Host "==> STEP: Git clone"
     New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
     Set-Location $WorkDir
-    # Clear old source if exists
     if (Test-Path "source_code") {
         Remove-Item -Recurse -Force "source_code" -ErrorAction SilentlyContinue
     }
-    if ($Branch) {
-        Write-Host "Cloning branch: $Branch"
-        git clone -c core.longpaths=true --branch $Branch $RepoUrl source_code
-    } else {
-        git clone -c core.longpaths=true $RepoUrl source_code
-    }
-    Set-Location source_code
-    # Init submodules if .gitmodules exists
+
+    # Extract token embedded in URL (https://oauth2:TOKEN@github.com/...)
+    $token = ""
+    $cleanUrl = $RepoUrl
+    try {
+        $uri = [System.Uri]$RepoUrl
+        if ($uri.UserInfo -match ':(.+)') { $token = $Matches[1] }
+        $cleanUrl = $RepoUrl -replace 'https://[^@]+@', 'https://'
+    } catch {}
+
+    # Parse owner/repo
+    $m = [regex]::Match($cleanUrl, 'github\.com[:/]([\w.\-]+/[\w.\-]+?)(?:\.git)?$')
+    if (-not $m.Success) { throw "Cannot parse GitHub repo from URL: $cleanUrl" }
+    $repoFullName = $m.Groups[1].Value
+    $ref = if ($Branch) { $Branch } else { "HEAD" }
+
+    Write-Host "Repository: $repoFullName @ $ref"
+    Download-GitHubZip -RepoFullName $repoFullName -Ref $ref -Token $token -DestDir $WorkDir -FolderName "source_code"
+    Set-Location "source_code"
+
+    # Handle submodules via API
     if (Test-Path ".gitmodules") {
-        Write-Host "[INFO] Submodules detected, initializing..."
-        git submodule update --init --recursive
-        Write-Host "[OK] Submodules initialized"
+        Write-Host "[INFO] Submodules detected, downloading via API..."
+        $gmContent = Get-Content ".gitmodules" -Raw
+        $smMatches = [regex]::Matches($gmContent, '(?ms)path\s*=\s*(.+?)\s*\n\s*url\s*=\s*(.+)')
+        foreach ($sm in $smMatches) {
+            $smPath = $sm.Groups[1].Value.Trim()
+            $smUrl  = $sm.Groups[2].Value.Trim() -replace '^git@github\.com:', 'https://github.com/'
+            $smM = [regex]::Match($smUrl, 'github\.com[:/]([\w.\-]+/[\w.\-]+?)(?:\.git)?$')
+            if (-not $smM.Success) { Write-Host "[WARN] Skipping non-GitHub submodule: $smUrl"; continue }
+            $smRepo = $smM.Groups[1].Value
+            $smDest = Join-Path (Get-Location) $smPath
+            $smParent = Split-Path $smDest
+            New-Item -ItemType Directory -Force -Path $smParent | Out-Null
+            Download-GitHubZip -RepoFullName $smRepo -Ref "HEAD" -Token $token -DestDir $smParent -FolderName (Split-Path $smPath -Leaf)
+            Write-Host "[OK] Submodule: $smPath"
+        }
+        Write-Host "[OK] All submodules downloaded"
     }
 }
 

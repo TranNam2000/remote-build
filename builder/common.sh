@@ -146,29 +146,81 @@ setup_macos_prerequisites() {
     fi
 }
 
-# --- Git clone ---
+# --- GitHub API download helper ---
+# Usage: download_github_zip <owner/repo> <ref> <token> <dest_parent_dir> <folder_name>
+download_github_zip() {
+    local repo_full="$1" ref="$2" token="$3" dest_dir="$4" folder_name="$5"
+    local headers=(-H "User-Agent: Flutter-Remote-Builder")
+    [ -n "$token" ] && headers+=(-H "Authorization: token $token")
+    local zip_path="$dest_dir/_dl_${folder_name}.zip"
+    local extract_path="$dest_dir/_ex_${folder_name}"
+    echo "[INFO] Downloading $repo_full @ $ref ..."
+    curl -fsSL "${headers[@]}" \
+        "https://api.github.com/repos/$repo_full/zipball/$ref" \
+        -o "$zip_path"
+    mkdir -p "$extract_path"
+    unzip -q "$zip_path" -d "$extract_path"
+    rm -f "$zip_path"
+    local extracted
+    extracted=$(find "$extract_path" -mindepth 1 -maxdepth 1 -type d | head -1)
+    [ -z "$extracted" ] && echo "[ERROR] Extracted folder not found for $repo_full" && return 1
+    local dest="$dest_dir/$folder_name"
+    rm -rf "$dest"
+    mv "$extracted" "$dest"
+    rm -rf "$extract_path"
+}
+
+# --- Git clone (via GitHub API) ---
 # After calling this, PWD = $work_dir/source_code
 clone_repo() {
     local repo_url="$1" branch="$2" work_dir="$3"
     echo "==> STEP: Git clone"
     mkdir -p "$work_dir"
     cd "$work_dir"
-    # Clear old source if exists
     rm -rf source_code 2>/dev/null || true
-    if [ -n "$branch" ]; then
-        echo "Cloning branch: $branch"
-        git clone -c core.longpaths=true --branch "$branch" "$repo_url" source_code
-    else
-        git clone -c core.longpaths=true "$repo_url" source_code
+
+    # Extract token embedded in URL (https://oauth2:TOKEN@github.com/...)
+    local token=""
+    local clean_url="$repo_url"
+    if [[ "$repo_url" =~ https://[^:]+:([^@]+)@ ]]; then
+        token="${BASH_REMATCH[1]}"
+        clean_url=$(echo "$repo_url" | sed 's|https://[^@]*@|https://|')
     fi
+
+    # Parse owner/repo
+    local repo_full
+    repo_full=$(echo "$clean_url" | grep -oP 'github\.com[:/]\K[\w.\-]+/[\w.\-]+?(?=\.git|$)')
+    [ -z "$repo_full" ] && echo "[ERROR] Cannot parse GitHub repo from: $clean_url" && exit 1
+
+    local ref="${branch:-HEAD}"
+    echo "Repository: $repo_full @ $ref"
+    download_github_zip "$repo_full" "$ref" "$token" "$work_dir" "source_code"
     cd source_code
-    # Init submodules if .gitmodules exists
+
+    # Handle submodules via API
     if [ -f ".gitmodules" ]; then
-        echo "[INFO] Submodules detected, initializing..."
-        git submodule update --init --recursive
-        echo "[OK] Submodules initialized"
+        echo "[INFO] Submodules detected, downloading via API..."
+        while IFS= read -r line; do
+            [[ "$line" =~ ^[[:space:]]*path[[:space:]]*=[[:space:]]*(.+) ]] && sm_path="${BASH_REMATCH[1]}"
+            if [[ "$line" =~ ^[[:space:]]*url[[:space:]]*=[[:space:]]*(.+) ]]; then
+                local sm_url="${BASH_REMATCH[1]}"
+                sm_url=$(echo "$sm_url" | sed 's|git@github\.com:|https://github.com/|')
+                local sm_repo
+                sm_repo=$(echo "$sm_url" | grep -oP 'github\.com[:/]\K[\w.\-]+/[\w.\-]+?(?=\.git|$)')
+                if [ -n "$sm_repo" ] && [ -n "$sm_path" ]; then
+                    local sm_parent; sm_parent=$(dirname "$sm_path")
+                    local sm_name;   sm_name=$(basename "$sm_path")
+                    mkdir -p "$sm_parent"
+                    download_github_zip "$sm_repo" "HEAD" "$token" "$sm_parent" "$sm_name"
+                    echo "[OK] Submodule: $sm_path"
+                fi
+                sm_path=""
+            fi
+        done < .gitmodules
+        echo "[OK] All submodules downloaded"
     fi
-    # Fix executable permissions (gradlew, etc.)
+
+    # Fix executable permissions
     chmod +x gradlew 2>/dev/null || true
     chmod +x android/gradlew 2>/dev/null || true
 }
