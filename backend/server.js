@@ -119,6 +119,10 @@ async function fetchAllGitHubPages(url, token) {
 
 // --- Telegram ---
 
+function escapeHtml(text) {
+    return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 function notifyTelegram(message, buttons) {
     if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
         console.log('[TELEGRAM] Skipped — no token/chat_id configured');
@@ -126,20 +130,22 @@ function notifyTelegram(message, buttons) {
     }
     const params = {
         chat_id: TELEGRAM_CHAT_ID,
-        parse_mode: 'Markdown',
+        parse_mode: 'HTML',
         text: message
     };
     if (buttons) {
         params.reply_markup = JSON.stringify({ inline_keyboard: buttons });
     }
-    console.log(`[TELEGRAM] Sending: ${message.substring(0, 60)}...`);
-    fetch(`https://api.github.com/repos/`, { method: 'HEAD' }).catch(() => {}); // warmup DNS
-    fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+    console.log(`[TELEGRAM] Sending: ${message.substring(0, 80)}...`);
+    return fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(params)
-    }).then(r => {
-        if (!r.ok) console.log(`[TELEGRAM] Error: ${r.status} ${r.statusText}`);
+    }).then(async r => {
+        if (!r.ok) {
+            const data = await r.json().catch(() => ({}));
+            console.log(`[TELEGRAM] Error: ${r.status} ${data.description || r.statusText}`);
+        }
     }).catch(e => console.log(`[TELEGRAM] Failed: ${e.message}`));
 }
 
@@ -460,7 +466,7 @@ setInterval(() => {
             job.sendLog('Build process died unexpectedly. Cleaning up...', 'error');
             const repoName = (job.repoUrl || '').replace('https://github.com/', '').replace('.git', '');
             notifyTelegram(
-                `❌ **Build process crashed!**\n\n📌 **Dự án:** ${repoName}\n🌿 **Nhánh:** ${job.branch || 'default'}\n⚠️ Process died without exit`
+                `❌ <b>Build process crashed!</b>\n\n📌 <b>Dự án:</b> ${escapeHtml(repoName)}\n🌿 <b>Nhánh:</b> ${escapeHtml(job.branch || 'default')}\n⚠️ Process died without exit`
             );
             activeBuilds.delete(buildId);
             emitLogEnd(job.queueId);
@@ -499,23 +505,10 @@ async function startBuild(job) {
     }
 
     const buildTypeLabel = lane === 'bundle' ? 'AAB' : lane === 'release' ? 'APK' : lane ? lane.toUpperCase() : '';
-    const telegramMsg = `🚀 *Bắt đầu Build!*\n\n📌 *Dự án:* ${repoNameShort}\n🌿 *Nhánh:* ${branch || 'default'}\n${platform === 'android' ? '🤖' : '🍏'} *Platform:* ${(platform || 'auto').toUpperCase()}${buildTypeLabel ? ` (${buildTypeLabel})` : ''}${flavor ? `\n🌿 *Môi trường:* ${flavor}` : ''}`;
-    sendLog(`📨 Gửi thông báo Telegram...`, 'info');
-    try {
-        const tgRes = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, parse_mode: 'Markdown', text: telegramMsg })
-        });
-        const tgData = await tgRes.json();
-        if (tgData.ok) {
-            sendLog(`✅ Telegram: đã gửi`, 'info');
-        } else {
-            sendLog(`⚠️ Telegram lỗi: ${tgData.description}`, 'warn');
-        }
-    } catch (e) {
-        sendLog(`⚠️ Telegram failed: ${e.message}`, 'warn');
-    }
+    const platformEmoji = platform === 'android' ? '🤖' : '🍏';
+    notifyTelegram(
+        `🚀 <b>Bắt đầu Build!</b>\n\n📌 <b>Dự án:</b> ${escapeHtml(repoNameShort)}\n🌿 <b>Nhánh:</b> ${escapeHtml(branch || 'default')}\n${platformEmoji} <b>Platform:</b> ${escapeHtml((platform || 'auto').toUpperCase())}${buildTypeLabel ? ` (${escapeHtml(buildTypeLabel)})` : ''}${flavor ? `\n🎨 <b>Môi trường:</b> ${escapeHtml(flavor)}` : ''}`
+    );
 
     // Validate platform compatibility
     if (platform === 'ios' && process.platform !== 'darwin') {
@@ -623,7 +616,7 @@ async function startBuild(job) {
         const mins = Math.round(BUILD_TIMEOUT_MS / 60000);
         sendLog(`⏰ Build đã vượt quá thời gian tối đa (${mins} phút). Đang hủy...`, 'error');
         notifyTelegram(
-            `⏰ **Build Timeout (${mins}p)!**\n\n📌 **Dự án:** ${repoUrl}\n🌿 **Nhánh:** ${branch}\n⏱️ **ID:** ${buildId}`
+            `⏰ <b>Build Timeout (${mins}p)!</b>\n\n📌 <b>Dự án:</b> ${escapeHtml(repoUrl)}\n🌿 <b>Nhánh:</b> ${escapeHtml(branch)}\n⏱️ <b>ID:</b> ${escapeHtml(buildId)}`
         );
         killBuildProcess('total timeout');
     }, BUILD_TIMEOUT_MS) : null;
@@ -638,7 +631,7 @@ async function startBuild(job) {
             const mins = Math.round(IDLE_TIMEOUT_MS / 60000);
             sendLog(`⏰ Build không có output trong ${mins} phút — có thể đã bị treo. Đang hủy...`, 'error');
             notifyTelegram(
-                `⏰ **Build bị treo (không output ${mins}p)!**\n\n📌 **Dự án:** ${repoUrl}\n🌿 **Nhánh:** ${branch}\n⏱️ **ID:** ${buildId}`
+                `⏰ <b>Build bị treo (không output ${mins}p)!</b>\n\n📌 <b>Dự án:</b> ${escapeHtml(repoUrl)}\n🌿 <b>Nhánh:</b> ${escapeHtml(branch)}\n⏱️ <b>ID:</b> ${escapeHtml(buildId)}`
             );
             killBuildProcess('idle timeout');
             clearInterval(idleCheck);
@@ -705,7 +698,7 @@ async function startBuild(job) {
                 if (!fileName) {
                     sendLog('Build succeeded but no downloadable artifact was found.', 'error');
                     notifyTelegram(
-                        `⚠️ **Build xong (exit 0) nhưng không tìm thấy artifact!**\n\n📌 **Dự án:** ${repoUrl}\n🌿 **Nhánh:** ${branch}\n${icon} **Nền tảng:** ${platformName}\n⏱️ **ID:** ${buildId}`
+                        `⚠️ <b>Build xong (exit 0) nhưng không tìm thấy artifact!</b>\n\n📌 <b>Dự án:</b> ${escapeHtml(repoUrl)}\n🌿 <b>Nhánh:</b> ${escapeHtml(branch)}\n${icon} <b>Nền tảng:</b> ${escapeHtml(platformName)}\n⏱️ <b>ID:</b> ${escapeHtml(buildId)}`
                     );
                     finishJob();
                     return;
@@ -748,13 +741,13 @@ async function startBuild(job) {
                         }
                     }
                 } catch(e) { console.log('Version detection failed:', e.message); }
-                const versionLine = versionInfo ? `\n📦 **Version:** ${versionInfo}` : '';
+                const versionLine = versionInfo ? `\n📦 <b>Version:</b> ${escapeHtml(versionInfo)}` : '';
                 const buildType = fileName.endsWith('.aab') ? 'AAB' : fileName.endsWith('.apk') ? 'APK' : fileName.endsWith('.ipa') ? 'IPA' : '';
-                const buildTypeLine = buildType ? `\n📋 **Loại:** ${buildType}` : '';
+                const buildTypeLine = buildType ? `\n📋 <b>Loại:</b> ${escapeHtml(buildType)}` : '';
 
-                const flavorLine = flavor ? `\n🌿 **Môi trường:** ${flavor}` : '';
+                const flavorLine = flavor ? `\n🎨 <b>Môi trường:</b> ${escapeHtml(flavor)}` : '';
                 notifyTelegram(
-                    `✅ **Build Thành Công!**\n\n📌 **Dự án:** ${repoName}\n🌿 **Nhánh:** ${branch || 'default'}\n${icon} **Nền tảng:** ${platformName}${buildTypeLine}${flavorLine}${versionLine}\n⏱️ **Thời gian:** ${timeStr}`,
+                    `✅ <b>Build Thành Công!</b>\n\n📌 <b>Dự án:</b> ${escapeHtml(repoName)}\n🌿 <b>Nhánh:</b> ${escapeHtml(branch || 'default')}\n${icon} <b>Nền tảng:</b> ${escapeHtml(platformName)}${buildTypeLine}${flavorLine}${versionLine}\n⏱️ <b>Thời gian:</b> ${escapeHtml(timeStr)}`,
                     [[{ text: `📥 Tải ${buildType || 'file'}`, url: fullUrl }]]
                 );
             } else {
@@ -763,16 +756,16 @@ async function startBuild(job) {
                 const repoName = repoUrl.replace('https://github.com/', '').replace('.git', '');
                 const exitMsg = code !== null ? `exit code ${code}` : 'process crashed';
                 sendLog(`Build failed (${exitMsg}) ❌`, 'error');
-                const flavorFailLine = flavor ? `\n🌿 **Môi trường:** ${flavor}` : '';
+                const flavorFailLine = flavor ? `\n🎨 <b>Môi trường:</b> ${escapeHtml(flavor)}` : '';
                 notifyTelegram(
-                    `❌ **Build Thất Bại!**\n\n📌 **Dự án:** ${repoName}\n🌿 **Nhánh:** ${branch || 'default'}\n${icon} **Nền tảng:** ${platformName}${flavorFailLine}\n⚠️ **Lỗi:** ${exitMsg}\n⏱️ **Thời gian:** ${timeStr}`
+                    `❌ <b>Build Thất Bại!</b>\n\n📌 <b>Dự án:</b> ${escapeHtml(repoName)}\n🌿 <b>Nhánh:</b> ${escapeHtml(branch || 'default')}\n${icon} <b>Nền tảng:</b> ${escapeHtml(platformName)}${flavorFailLine}\n⚠️ <b>Lỗi:</b> ${escapeHtml(exitMsg)}\n⏱️ <b>Thời gian:</b> ${escapeHtml(timeStr)}`
                 );
             }
         } catch (err) {
             console.error(`[CRITICAL] Error in close handler for build ${buildId}:`, err);
             sendLog(`Internal error after build finished: ${err.message}`, 'error');
             notifyTelegram(
-                `🔥 **Lỗi hệ thống sau build!**\n\n📌 ${repoUrl}\n⚠️ ${err.message}\n⏱️ ID: ${buildId}`
+                `🔥 <b>Lỗi hệ thống sau build!</b>\n\n📌 ${escapeHtml(repoUrl)}\n⚠️ ${escapeHtml(err.message)}\n⏱️ ID: ${escapeHtml(buildId)}`
             );
         }
         finishJob();
@@ -781,7 +774,7 @@ async function startBuild(job) {
     buildProcess.on('error', (err) => {
         sendLog(`Failed to start subprocess: ${err.message}`, 'error');
         notifyTelegram(
-            `❌ **Build Lỗi!**\n\n📌 ${repoUrl}\n⚠️ ${err.message}\n⏱️ ID: ${buildId}`
+            `❌ <b>Build Lỗi!</b>\n\n📌 ${escapeHtml(repoUrl)}\n⚠️ ${escapeHtml(err.message)}\n⏱️ ID: ${escapeHtml(buildId)}`
         );
         finishJob();
     });
@@ -878,7 +871,7 @@ app.post('/api/cancel', (req, res) => {
             }
         } catch { }
         active.job.sendLog('⛔ Build đã bị hủy bởi người dùng.', 'error');
-        notifyTelegram(`⛔ **Build Đã Hủy**\n\n📌 ${active.job.repoUrl}\n⏱️ ID: ${id}`);
+        notifyTelegram(`⛔ <b>Build Đã Hủy</b>\n\n📌 ${escapeHtml(active.job.repoUrl)}\n⏱️ ID: ${escapeHtml(id)}`);
         activeBuilds.delete(id);
         emitLogEnd(active.job.queueId);
         processQueue();
