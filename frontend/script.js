@@ -276,9 +276,9 @@ document.addEventListener('DOMContentLoaded', () => {
             });
 
             repoSelectGroup.style.display = 'block';
-            platformSelectGroup.style.display = 'block';  // Show platform selection after repos load
+            platformSelectGroup.style.display = 'none';
             appendLog(`Đã tải thành công ${data.repos.length} repositories từ GitHub.`, 'success');
-            appendLog(`📱 Chọn platform build trước, rồi chọn repository.`, 'info');
+            appendLog(`📱 Chọn repository và branch để bắt đầu.`, 'info');
         } catch (error) {
             alert(`Lỗi khi tải repos: ${error.message}`);
         } finally {
@@ -312,6 +312,65 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
+    // Reset platform/flavor/buildType groups
+    function resetBuildOptions() {
+        platformSelectGroup.style.display = 'none';
+        platformSelect.value = '';
+        buildTypeGroup.style.display = 'none';
+        flavorGroup.style.display = 'none';
+        flavorSelect.innerHTML = '';
+        detectedFlavors = [];
+        detectedProjectType = null;
+    }
+
+    // Chạy detect và cập nhật platform + flavor
+    async function detectAndShowOptions(repoUrl, branch, token) {
+        try {
+            appendLog(`🔍 Đang phát hiện loại project (branch: ${branch || 'default'})...`, 'info');
+            const detectRes = await fetch('/api/detect', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ repoUrl, branch, token })
+            });
+            if (!detectRes.ok) return;
+            const detectData = await detectRes.json();
+            detectedProjectType = detectData.projectType;
+            isMacOS = detectData.isMac;
+            detectedFlavors = detectData.flavors || [];
+
+            appendLog(`📋 Project Type: ${detectedProjectType || 'unknown'}`, detectedProjectType ? 'success' : 'warn');
+
+            // Cập nhật option platform dựa theo loại project
+            platformSelect.innerHTML = '';
+            if (detectedProjectType === 'flutter' && isMacOS) {
+                platformSelect.innerHTML = `<option value="android">🤖 Android</option><option value="ios">🍏 iOS</option>`;
+            } else if (detectedProjectType === 'ios') {
+                platformSelect.innerHTML = `<option value="ios">🍏 iOS</option>`;
+            } else {
+                // android hoặc flutter (non-mac) → chỉ Android
+                platformSelect.innerHTML = `<option value="android">🤖 Android</option>`;
+            }
+            platformSelectGroup.style.display = 'block';
+
+            // Nếu là Android và detect được flavor thì hiện luôn
+            if (detectedFlavors.length > 0) {
+                appendLog(`🎨 Môi trường build: ${detectedFlavors.join(', ')}`, 'success');
+                flavorSelect.innerHTML = '';
+                detectedFlavors.forEach(f => {
+                    const opt = document.createElement('option');
+                    opt.value = f;
+                    opt.textContent = f;
+                    flavorSelect.appendChild(opt);
+                });
+            }
+
+            // Trigger platform change để hiện build type + flavor
+            platformSelect.dispatchEvent(new Event('change'));
+        } catch(err) {
+            appendLog(`Lỗi detect: ${err.message}`, 'error');
+        }
+    }
+
     repoSelect.addEventListener('change', async (e) => {
         if (e.target.value) {
             const selectedOption = e.target.options[e.target.selectedIndex];
@@ -320,71 +379,42 @@ document.addEventListener('DOMContentLoaded', () => {
 
             branchSelectGroup.style.display = 'none';
             branchSelect.innerHTML = '<option value="">-- Chọn một branch --</option>';
-            flavorGroup.style.display = 'none';
-            detectedFlavors = [];
+            resetBuildOptions();
 
             if (token && repoFullName) {
                 try {
-                    // Fetch branches and detect project type in parallel
-                    appendLog(`Đang tải branches và phát hiện loại project...`, 'info');
-
-                    const [branchRes, detectRes] = await Promise.all([
-                        fetch('/api/branches', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ token, repoFullName })
-                        }),
-                        fetch('/api/detect', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ repoUrl: e.target.value, branch: '', token })
-                        })
-                    ]);
-
-                    if (branchRes.ok) {
-                        const data = await branchRes.json();
-                        if (data.branches && data.branches.length > 0) {
-                            data.branches.forEach(branch => {
-                                const opt = document.createElement('option');
-                                opt.value = branch;
-                                opt.textContent = branch;
-                                branchSelect.appendChild(opt);
-                            });
-                            branchSelectGroup.style.display = 'block';
-                            appendLog(`Đã tải ${data.branches.length} branches.`, 'success');
-                        }
-                    } else {
-                        throw new Error('Không thể tải branch');
-                    }
-
-                    if (detectRes.ok) {
-                        const detectData = await detectRes.json();
-                        detectedProjectType = detectData.projectType;
-                        isMacOS = detectData.isMac;
-                        detectedFlavors = detectData.flavors || [];
-
-                        appendLog(`📋 Project Type: ${detectedProjectType}`, 'success');
-
-                        if (detectedFlavors.length > 0) {
-                            appendLog(`🎨 Flavors detected: ${detectedFlavors.join(', ')}`, 'success');
-                            flavorSelect.innerHTML = '';
-                            detectedFlavors.forEach(f => {
-                                const opt = document.createElement('option');
-                                opt.value = f;
-                                opt.textContent = f;
-                                flavorSelect.appendChild(opt);
-                            });
-                            // Show flavor dropdown if Android is selected
-                            if (platformSelect.value === 'android') {
-                                flavorGroup.style.display = 'block';
-                            }
-                        }
+                    appendLog(`Đang tải branches...`, 'info');
+                    const branchRes = await fetch('/api/branches', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ token, repoFullName })
+                    });
+                    if (!branchRes.ok) throw new Error('Không thể tải branch');
+                    const data = await branchRes.json();
+                    if (data.branches && data.branches.length > 0) {
+                        data.branches.forEach(branch => {
+                            const opt = document.createElement('option');
+                            opt.value = branch;
+                            opt.textContent = branch;
+                            branchSelect.appendChild(opt);
+                        });
+                        branchSelectGroup.style.display = 'block';
+                        appendLog(`Đã tải ${data.branches.length} branches. Hãy chọn branch để tiếp tục.`, 'success');
                     }
                 } catch(err) {
                     appendLog(`Lỗi: ${err.message}`, 'error');
                 }
             }
         }
+    });
+
+    branchSelect.addEventListener('change', async () => {
+        const branch = branchSelect.value;
+        const repoUrl = repoSelect.value;
+        const token = tokenInput.value.trim();
+        resetBuildOptions();
+        if (!branch || !repoUrl) return;
+        await detectAndShowOptions(repoUrl, branch, token);
     });
 
     form.addEventListener('submit', async (e) => {

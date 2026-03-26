@@ -219,15 +219,24 @@ function parseFlavorsFromContent(content) {
     }
     if (braceEnd === -1) return [];
     const block = content.substring(braceStart + 1, braceEnd);
-    const flavors = [];
-    const keywords = ['productFlavors', 'android', 'buildTypes', 'defaultConfig', 'signingConfigs', 'compileOptions', 'kotlinOptions', 'buildFeatures', 'packaging', 'lint'];
-    for (const m of block.matchAll(/^\s+(\w+)\s*\{/gm)) {
-        if (!keywords.includes(m[1])) flavors.push(m[1]);
+    const flavors = new Set();
+
+    // Kotlin DSL: create("flavorName") or register("flavorName")
+    for (const m of block.matchAll(/(?:create|register)\("(\w+)"\)/g)) {
+        flavors.add(m[1]);
     }
-    for (const m of block.matchAll(/create\("(\w+)"\)/g)) {
-        flavors.push(m[1]);
+
+    // Groovy DSL: flavorName { ... } — only if no Kotlin DSL flavors found
+    if (flavors.size === 0) {
+        const keywords = new Set(['android', 'buildTypes', 'defaultConfig', 'signingConfigs',
+            'compileOptions', 'kotlinOptions', 'buildFeatures', 'packaging', 'lint',
+            'create', 'register', 'named', 'getByName', 'flavorDimensions']);
+        for (const m of block.matchAll(/^\s+(\w+)\s*\{/gm)) {
+            if (!keywords.has(m[1])) flavors.add(m[1]);
+        }
     }
-    return flavors;
+
+    return [...flavors];
 }
 
 function parseFlavors(sourceDir) {
@@ -249,51 +258,105 @@ async function detectProjectTypeViaAPI(repoUrl, branch, token) {
     const m = repoUrl.match(/github\.com[/:]([\w.-]+\/[\w.-]+?)(?:\.git)?$/);
     if (!m) return { projectType: null, flavors: [] };
     const repoFullName = m[1];
-    const ref = branch ? `?ref=${encodeURIComponent(branch)}` : '';
+    const ref = branch || 'HEAD';
     const headers = token ? GITHUB_HEADERS(token) : { 'User-Agent': 'Flutter-Remote-Builder' };
-
-    async function fileExists(filePath) {
-        try {
-            const res = await fetch(`https://api.github.com/repos/${repoFullName}/contents/${filePath}${ref}`, { headers });
-            return res.status === 200;
-        } catch { return false; }
-    }
 
     async function fetchFileContent(filePath) {
         try {
-            const res = await fetch(`https://api.github.com/repos/${repoFullName}/contents/${filePath}${ref}`, { headers });
+            const res = await fetch(`https://api.github.com/repos/${repoFullName}/contents/${filePath}?ref=${encodeURIComponent(ref)}`, { headers });
             if (!res.ok) return null;
             const data = await res.json();
-            return data.content ? Buffer.from(data.content, 'base64').toString('utf8') : null;
+            if (data.content) return Buffer.from(data.content, 'base64').toString('utf8');
+            // File quá lớn — thử download_url
+            if (data.download_url) {
+                const raw = await fetch(data.download_url, { headers });
+                return raw.ok ? await raw.text() : null;
+            }
+            return null;
+        } catch { return null; }
+    }
+
+    // Dùng Tree API để lấy toàn bộ danh sách file
+    async function getRepoTree() {
+        try {
+            const res = await fetch(`https://api.github.com/repos/${repoFullName}/git/trees/${encodeURIComponent(ref)}?recursive=1`, { headers });
+            if (!res.ok) return null;
+            const data = await res.json();
+            return data.tree ? data.tree.map(f => f.path) : null;
         } catch { return null; }
     }
 
     let projectType = null;
     let flavors = [];
 
-    if (await fileExists('pubspec.yaml')) {
-        projectType = 'flutter';
-    } else if (
-        await fileExists('build.gradle') || await fileExists('build.gradle.kts') ||
-        await fileExists('app/build.gradle') || await fileExists('app/build.gradle.kts') ||
-        await fileExists('settings.gradle') || await fileExists('settings.gradle.kts') ||
-        await fileExists('gradlew')
-    ) {
-        projectType = 'android';
-    } else if (await fileExists('ios/Runner.xcodeproj') || await fileExists('ios/Runner.xcworkspace')) {
-        projectType = 'ios';
-    }
+    const tree = await getRepoTree();
+    console.log(`[detect] ${repoFullName} — tree: ${tree ? tree.length + ' files' : 'failed'}`);
 
-    if (projectType === 'flutter' || projectType === 'android') {
-        for (const gPath of ['app/build.gradle', 'app/build.gradle.kts', 'android/app/build.gradle', 'android/app/build.gradle.kts']) {
-            const content = await fetchFileContent(gPath);
-            if (content) {
-                const parsed = parseFlavorsFromContent(content);
-                if (parsed.length > 0) { flavors = parsed; break; }
+    if (tree) {
+        const has = (pattern) => tree.some(f => typeof pattern === 'string' ? f === pattern || f.endsWith('/' + pattern) : pattern.test(f));
+
+        if (has('pubspec.yaml')) {
+            projectType = 'flutter';
+        } else if (has(/build\.gradle(\.kts)?$/) || has('gradlew') || has('settings.gradle') || has('settings.gradle.kts')) {
+            projectType = 'android';
+        } else if (has('ios/Runner.xcodeproj') || has('ios/Runner.xcworkspace')) {
+            projectType = 'ios';
+        }
+
+        console.log(`[detect] ${repoFullName} — projectType: ${projectType}`);
+
+        if (projectType === 'flutter' || projectType === 'android') {
+            // Tìm tất cả build.gradle files, ưu tiên file trong thư mục app/
+            const gradleFiles = tree
+                .filter(f => /build\.gradle(\.kts)?$/.test(f) && !f.startsWith('buildSrc/') && !f.startsWith('.gradle/'))
+                .sort((a, b) => {
+                    const score = f => (f.includes('/app/') || f.startsWith('app/')) ? 0 : (f.includes('android/') ? 1 : 2);
+                    return score(a) - score(b);
+                });
+
+            console.log(`[detect] ${repoFullName} — gradle files: [${gradleFiles.join(', ')}]`);
+
+            for (const gPath of gradleFiles) {
+                const content = await fetchFileContent(gPath);
+                console.log(`[detect] ${repoFullName} — ${gPath}: ${content ? `found (${content.length} chars)` : 'not found'}`);
+                if (content) {
+                    const parsed = parseFlavorsFromContent(content);
+                    console.log(`[detect] ${repoFullName} — flavors from ${gPath}: [${parsed.join(', ')}]`);
+                    if (parsed.length > 0) { flavors = parsed; break; }
+                }
+            }
+        }
+    } else {
+        // Fallback: kiểm tra các path cố định nếu Tree API thất bại
+        const checkFile = async (p) => {
+            try {
+                const res = await fetch(`https://api.github.com/repos/${repoFullName}/contents/${p}?ref=${encodeURIComponent(ref)}`, { headers });
+                return res.status === 200;
+            } catch { return false; }
+        };
+
+        if (await checkFile('pubspec.yaml')) {
+            projectType = 'flutter';
+        } else if (await checkFile('build.gradle') || await checkFile('build.gradle.kts') ||
+            await checkFile('app/build.gradle') || await checkFile('app/build.gradle.kts') ||
+            await checkFile('settings.gradle') || await checkFile('gradlew')) {
+            projectType = 'android';
+        } else if (await checkFile('ios/Runner.xcodeproj') || await checkFile('ios/Runner.xcworkspace')) {
+            projectType = 'ios';
+        }
+
+        if (projectType === 'flutter' || projectType === 'android') {
+            for (const gPath of ['app/build.gradle', 'app/build.gradle.kts', 'android/app/build.gradle', 'android/app/build.gradle.kts']) {
+                const content = await fetchFileContent(gPath);
+                if (content) {
+                    const parsed = parseFlavorsFromContent(content);
+                    if (parsed.length > 0) { flavors = parsed; break; }
+                }
             }
         }
     }
 
+    console.log(`[detect] ${repoFullName} — result: type=${projectType}, flavors=[${flavors.join(', ')}]`);
     return { projectType, flavors };
 }
 
