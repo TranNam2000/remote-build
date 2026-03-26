@@ -28,6 +28,18 @@ echo "✅ cloudflared: $(cloudflared --version 2>&1 | head -1)"
 pkill -f "cloudflared.*tunnel" 2>/dev/null || true
 sleep 1
 
+# --- Install npm dependencies if needed ---
+if [ ! -d "backend/node_modules" ]; then
+    echo "📦 Installing npm dependencies..."
+    cd backend && npm install && cd ..
+    if [ ! -d "backend/node_modules" ]; then
+        echo "❌ npm install failed!"
+        read -p "Nhan Enter de dong."
+        exit 1
+    fi
+    echo "✅ Dependencies installed"
+fi
+
 # --- Start server if not running ---
 if ! lsof -ti:3000 >/dev/null 2>&1; then
     echo "🚀 Starting build server..."
@@ -48,7 +60,7 @@ fi
 
 # --- Telegram config ---
 TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-8793252151:AAH-P7LoLGKKo5_pPBgk9MPlmVpOKsXPSN0}"
-TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-2019979030}"
+TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:--5052928458}"
 
 send_telegram() {
     local msg="$1"
@@ -149,6 +161,11 @@ YAML
 
     TUNNEL_URL="https://$TUNNEL_HOSTNAME"
 
+    # Update server BASE_URL
+    curl -s -X POST http://localhost:3000/api/set-base-url \
+        -H "Content-Type: application/json" \
+        -d "{\"url\":\"$TUNNEL_URL\"}" >/dev/null 2>&1 && echo "✅ BASE_URL updated: $TUNNEL_URL" || true
+
     # Copy to clipboard
     echo "$TUNNEL_URL" | pbcopy 2>/dev/null && echo "📎 Da copy URL vao clipboard!" || true
 
@@ -169,6 +186,11 @@ else
         if echo "$line" | grep -qE "https://.*trycloudflare\.com"; then
             TUNNEL_URL=$(echo "$line" | grep -oE "https://[a-z0-9-]+\.trycloudflare\.com")
             if [ -n "$TUNNEL_URL" ]; then
+                # Update server BASE_URL
+                curl -s -X POST http://localhost:3000/api/set-base-url \
+                    -H "Content-Type: application/json" \
+                    -d "{\"url\":\"$TUNNEL_URL\"}" >/dev/null 2>&1 || true
+
                 echo ""
                 echo "============================================"
                 echo "   ✅ Tunnel Ready!"

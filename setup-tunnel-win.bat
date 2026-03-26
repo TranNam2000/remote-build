@@ -113,8 +113,9 @@ powershell -Command ^
     "    Write-Host \"Port 3000 dang duoc su dung boi: $($proc.ProcessName) (PID: $pid3000)\"; " ^
     "    $choice = Read-Host 'Restart server? [Y/n]'; " ^
     "    if ($choice -eq '' -or $choice -eq 'Y' -or $choice -eq 'y') { " ^
-    "        Write-Host 'Stopping old server...'; " ^
+    "        Write-Host 'Stopping old server and Java processes...'; " ^
     "        Stop-Process -Id $pid3000 -Force -ErrorAction SilentlyContinue; " ^
+    "        Stop-Process -Name java,javaw -Force -ErrorAction SilentlyContinue; " ^
     "        Start-Sleep 2; " ^
     "    } else { " ^
     "        Write-Host 'Giu server cu, tiep tuc...'; " ^
@@ -122,7 +123,7 @@ powershell -Command ^
     "    } " ^
     "}; " ^
     "Write-Host 'Starting build server...'; " ^
-    "Start-Process -FilePath \"%NODE_PATH%\" -ArgumentList 'backend\server.js' -WorkingDirectory \"%~dp0.\" -WindowStyle Hidden; " ^
+    "Start-Process -FilePath \"%NODE_PATH%\" -ArgumentList '--max-old-space-size=512', 'backend\server.js' -WorkingDirectory \"%~dp0.\" -WindowStyle Hidden; " ^
     "Start-Sleep 3; " ^
     "if (Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue) { " ^
     "    Write-Host 'Server running on port 3000' " ^
@@ -207,6 +208,10 @@ powershell -Command ^
     "$msg = \"*Remote Build Server Online!*`n`nhttps://%TUNNEL_HOSTNAME%`n`nURL co dinh.\"; " ^
     "if ($token) { try { Invoke-RestMethod -Uri \"https://api.telegram.org/bot$token/sendMessage\" -Method Post -Body @{chat_id=$chatId;parse_mode='Markdown';text=$msg} | Out-Null; Write-Host 'Sent to Telegram!' } catch { Write-Host 'Telegram failed.' } } else { Write-Host 'Telegram not configured, skipping.' }"
 
+:: Update server BASE_URL with tunnel hostname
+powershell -Command ^
+    "try { Invoke-RestMethod -Uri 'http://localhost:3000/api/set-base-url' -Method Post -ContentType 'application/json' -Body ('{\"url\":\"https://%TUNNEL_HOSTNAME%\"}') | Out-Null; Write-Host 'BASE_URL updated: https://%TUNNEL_HOSTNAME%' } catch { Write-Host 'Warning: Could not update BASE_URL' }"
+
 echo.
 echo ============================================
 echo    Starting Named Tunnel
@@ -236,6 +241,7 @@ powershell -ExecutionPolicy Bypass -Command ^
     "        $content = Get-Content $logFile -Raw -ErrorAction SilentlyContinue; " ^
     "        if ($content -match '(https://[a-z0-9-]+\.trycloudflare\.com)') { " ^
     "            $url = $Matches[1]; " ^
+    "            try { Invoke-RestMethod -Uri 'http://localhost:3000/api/set-base-url' -Method Post -ContentType 'application/json' -Body ('{\"url\":\"' + $url + '\"}') | Out-Null; Write-Host 'BASE_URL updated' } catch { Write-Host 'Warning: Could not update BASE_URL' }; " ^
     "            Write-Host ''; " ^
     "            Write-Host '============================================'; " ^
     "            Write-Host '   Tunnel Ready!'; " ^
@@ -258,6 +264,7 @@ powershell -ExecutionPolicy Bypass -Command ^
     "Write-Host ''; " ^
     "Write-Host 'Close this window to stop tunnel.'; " ^
     "Wait-Process -Id $proc.Id"
+
 
 :end
 echo.

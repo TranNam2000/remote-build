@@ -45,4 +45,3 @@ set -e
 # Fastlane may exit 1 due to locale warning even on success — check artifact instead
 collect_android_artifact "$OUTPUT_DIR"
 
-cleanup_temp "$WORK_DIR"

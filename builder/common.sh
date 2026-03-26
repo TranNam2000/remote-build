@@ -101,14 +101,32 @@ setup_macos_prerequisites() {
             fi
         fi
         export PATH="$PATH:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools"
-        if command -v sdkmanager >/dev/null 2>&1; then
-            echo "📦 Checking Android SDK components..."
-            yes | sdkmanager --licenses >/dev/null 2>&1 || true
-            sdkmanager "platform-tools" 2>/dev/null || true
-            # Auto-install build-tools if no aapt2 found
-            if [ -z "$(find "$ANDROID_HOME/build-tools" -name "aapt2" 2>/dev/null)" ]; then
+        # Accept licenses only if not yet accepted
+        if [ ! -f "$ANDROID_HOME/licenses/android-sdk-license" ]; then
+            if command -v sdkmanager >/dev/null 2>&1; then
+                echo "📦 Accepting SDK licenses..."
+                yes | sdkmanager --licenses >/dev/null 2>&1 || true
+            fi
+        else
+            echo "✅ SDK licenses already accepted"
+        fi
+        # Install platform-tools only if missing
+        if [ ! -f "$ANDROID_HOME/platform-tools/adb" ]; then
+            if command -v sdkmanager >/dev/null 2>&1; then
+                echo "📦 Installing platform-tools..."
+                sdkmanager "platform-tools" 2>/dev/null || true
+            fi
+        else
+            echo "✅ platform-tools already installed"
+        fi
+        # Auto-install build-tools if no aapt2 found
+        if [ -z "$(find "$ANDROID_HOME/build-tools" -name "aapt2" 2>/dev/null)" ]; then
+            if command -v sdkmanager >/dev/null 2>&1; then
+                echo "📦 Installing build-tools..."
                 sdkmanager "build-tools;36.0.0" 2>/dev/null || true
             fi
+        else
+            echo "✅ build-tools already installed"
         fi
         echo "✅ Android SDK: $ANDROID_HOME"
     fi
@@ -139,9 +157,9 @@ clone_repo() {
     rm -rf source_code 2>/dev/null || true
     if [ -n "$branch" ]; then
         echo "Cloning branch: $branch"
-        git clone --branch "$branch" "$repo_url" source_code
+        git clone -c core.longpaths=true --branch "$branch" "$repo_url" source_code
     else
-        git clone "$repo_url" source_code
+        git clone -c core.longpaths=true "$repo_url" source_code
     fi
     cd source_code
     # Fix executable permissions (gradlew, etc.)
@@ -199,23 +217,94 @@ install_required_sdk() {
         return 0
     fi
 
-    echo "📦 Checking required SDK platforms..."
+    echo "📦 Checking required SDK components from project..."
 
-    # Only scan compileSdk — that's what actually needs to be installed
+    # Only scan the main app's build.gradle — plugins/dependencies don't need separate platforms
+    local gradle_files=""
+    for gf in app/build.gradle app/build.gradle.kts android/app/build.gradle android/app/build.gradle.kts; do
+        [ -f "$gf" ] && gradle_files="$gradle_files $gf"
+    done
+    [ -z "$gradle_files" ] && return 0
+
     local sdk_versions
-    sdk_versions=$(find . -name "build.gradle" -o -name "build.gradle.kts" 2>/dev/null \
+    sdk_versions=$(echo "$gradle_files" \
         | xargs grep -hE 'compileSdk|compileSdkVersion' 2>/dev/null \
         | grep -oE '[0-9]+' | sort -un)
+
+    local bt_versions
+    bt_versions=$(echo "$gradle_files" \
+        | xargs grep -hE 'buildToolsVersion' 2>/dev/null \
+        | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | sort -un)
+
+    # Check what's missing
+    local need_install=0
 
     for ver in $sdk_versions; do
         [ "$ver" -lt 21 ] 2>/dev/null && continue
         if [ ! -d "$ANDROID_HOME/platforms/android-$ver" ]; then
-            echo "📦 Installing platforms;android-$ver (required by project)..."
+            need_install=1
+            break
+        fi
+    done
+
+    if [ "$need_install" = "0" ]; then
+        for btv in $bt_versions; do
+            if [ ! -d "$ANDROID_HOME/build-tools/$btv" ]; then
+                need_install=1
+                break
+            fi
+        done
+    fi
+
+    # Also check fallback: no build-tools at all
+    local need_fallback_bt=0
+    if [ -z "$bt_versions" ] && [ -z "$(ls -A "$ANDROID_HOME/build-tools" 2>/dev/null)" ]; then
+        need_fallback_bt=1
+        need_install=1
+    fi
+
+    # Nothing to install
+    if [ "$need_install" = "0" ]; then
+        echo "✅ All required SDK components already installed"
+        return 0
+    fi
+
+    # Accept licenses only when needed
+    if [ ! -f "$ANDROID_HOME/licenses/android-sdk-license" ]; then
+        echo "📦 Accepting SDK licenses..."
+        yes | sdkmanager --licenses >/dev/null 2>&1 || true
+    fi
+
+    # Install missing platforms
+    for ver in $sdk_versions; do
+        [ "$ver" -lt 21 ] 2>/dev/null && continue
+        if [ ! -d "$ANDROID_HOME/platforms/android-$ver" ]; then
+            echo "📦 Installing platforms;android-$ver..."
             yes | sdkmanager "platforms;android-$ver" 2>/dev/null || true
         else
             echo "✅ platforms;android-$ver already installed"
         fi
     done
+
+    # Install missing build-tools
+    for btv in $bt_versions; do
+        if [ ! -d "$ANDROID_HOME/build-tools/$btv" ]; then
+            echo "📦 Installing build-tools;$btv..."
+            yes | sdkmanager "build-tools;$btv" 2>/dev/null || true
+        else
+            echo "✅ build-tools;$btv already installed"
+        fi
+    done
+
+    # Fallback: no build-tools specified and none installed
+    if [ "$need_fallback_bt" = "1" ]; then
+        local fallback_ver
+        fallback_ver=$(echo "$sdk_versions" | tail -n 1)
+        if [ -n "$fallback_ver" ]; then
+            echo "📦 No build-tools specified, installing build-tools;${fallback_ver}.0.0..."
+            yes | sdkmanager "build-tools;${fallback_ver}.0.0" 2>/dev/null || true
+        fi
+    fi
 }
 
 
@@ -229,6 +318,12 @@ optimize_gradle() {
         props="android/gradle.properties"
         mkdir -p android
     fi
+    # Remove existing Gradle tuning keys from ALL properties files so our values take effect
+    for pf in gradle.properties android/gradle.properties; do
+        if [ -f "$pf" ]; then
+            sed -i '/^org\.gradle\.jvmargs=/d;/^org\.gradle\.daemon=/d;/^org\.gradle\.parallel=/d;/^org\.gradle\.caching=/d;/^org\.gradle\.workers\.max=/d' "$pf"
+        fi
+    done
     [ -f "$props" ] && echo "" >> "$props"
 
     # Find the latest aapt2 binary from installed build-tools
@@ -253,12 +348,46 @@ optimize_gradle() {
         echo "⚠️  No aapt2 found. Build may fail."
     fi
 
+    # --- JVM / Gradle performance tuning ---
+    echo "Killing stale Gradle daemons..."
+    pkill -f 'GradleDaemon' 2>/dev/null || true
+    sleep 2
 
-    echo "org.gradle.daemon=true" >> "$props"
-    echo "org.gradle.parallel=false" >> "$props"
+    local cpu_cores
+    cpu_cores=$(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 4)
+    local total_mb
+    total_mb=$(free -m 2>/dev/null | awk '/Mem:/{print $2}' || sysctl -n hw.memsize 2>/dev/null | awk '{printf "%d", $1/1048576}' || echo 8192)
+    local avail_mb
+    avail_mb=$(free -m 2>/dev/null | awk '/Mem:/{print $7}' || vm_stat 2>/dev/null | awk '/Pages free/{gsub(/\./,"",$3); print int($3*4096/1048576)}' || echo 4096)
+    # Reserve 2GB for OS + Flutter/Dart, use the rest for Gradle heap
+    local reserve_mb=2048
+    local heap_mb=$(( avail_mb - reserve_mb ))
+    [ "$heap_mb" -lt 1024 ] && heap_mb=1024
+    [ "$heap_mb" -gt 4096 ] && heap_mb=4096
+    local workers_max=$(( cpu_cores - 1 ))
+    [ "$workers_max" -gt 6 ] && workers_max=6
+    [ "$workers_max" -lt 1 ] && workers_max=1
+    echo "✅ Detected: ${cpu_cores} cores, ${total_mb}MB total, ${avail_mb}MB free -> heap=${heap_mb}m, workers=${workers_max}"
+
+    echo "android.useAndroidX=true" >> "$props"
+    echo "android.nonTransitiveRClass=true" >> "$props"
+    echo "org.gradle.daemon=false" >> "$props"
+    echo "org.gradle.jvmargs=-Xmx${heap_mb}m -XX:MaxMetaspaceSize=512m -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -XX:+ExitOnOutOfMemoryError" >> "$props"
+    echo "org.gradle.parallel=true" >> "$props"
     echo "org.gradle.caching=false" >> "$props"
-    echo "org.gradle.workers.max=2" >> "$props"
-    echo "android.enableR8.fullMode=false" >> "$props"
+    echo "org.gradle.workers.max=$workers_max" >> "$props"
+    echo "kotlin.compiler.execution.strategy=in-process" >> "$props"
+
+    # --- Auto-inject ProGuard/R8 dontwarn rules ---
+    for pg_file in proguard-rules.pro app/proguard-rules.pro android/app/proguard-rules.pro; do
+        if [ -f "$pg_file" ]; then
+            if ! grep -q "dontwarn com.bytedance.sdk.openadsdk" "$pg_file" 2>/dev/null; then
+                echo "-dontwarn com.bytedance.sdk.openadsdk.**" >> "$pg_file"
+                echo "-dontwarn com.facebook.infer.annotation.**" >> "$pg_file"
+                echo "✅ Injected dontwarn rules into $pg_file"
+            fi
+        fi
+    done
 }
 
 # --- Setup Fastfile for platform ---
@@ -300,14 +429,12 @@ default_platform(:android)
 platform :android do
   desc "Build release APK (native Android)"
   lane :release do
-    gradle(task: "assemble${flavor_cap}Release")
+    gradle(task: "assemble${flavor_cap}Release", flags: "--no-daemon", print_command: true)
   end
 
   desc "Build release AAB (native Android)"
   lane :bundle do
-    gradle(
-      task: "bundle${flavor_cap}Release"
-    )
+    gradle(task: "bundle${flavor_cap}Release", flags: "--no-daemon", print_command: true)
   end
 end
 NEOF

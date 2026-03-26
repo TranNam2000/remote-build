@@ -12,9 +12,9 @@ powershell -Command "$conn = Get-NetTCPConnection -LocalPort 3000 -State Listen 
 echo 2. Stopping Cloudflare Tunnel...
 taskkill /f /im cloudflared.exe >nul 2>&1
 
-echo 3. Stopping Build Daemons (Java/Gradle, Ruby) to release file locks...
-taskkill /f /im java.exe >nul 2>&1
-taskkill /f /im ruby.exe >nul 2>&1
+echo 3. Stopping all Java/Gradle processes...
+taskkill /f /im java.exe /T >nul 2>&1
+taskkill /f /im javaw.exe /T >nul 2>&1
 
 echo.
 echo All services stopped! You can now safely delete the folder without "File in Use" errors.

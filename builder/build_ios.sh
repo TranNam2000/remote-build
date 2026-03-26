@@ -14,7 +14,6 @@ source "$(dirname "$0")/common.sh"
 echo "Starting iOS Build..."
 echo "Build ID: $BUILD_ID"
 
-cleanup_old_builds "$WORK_DIR_BASE" "${CLEANUP_AGE_HOURS:-1}"
 mkdir -p "$OUTPUT_DIR"
 
 # Clone first to detect project type
@@ -110,5 +109,5 @@ set -e
 # --- Collect artifact ---
 collect_ios_artifact "$OUTPUT_DIR"
 echo "Saved output to: $OUTPUT_DIR"
-
 cleanup_temp "$WORK_DIR"
+

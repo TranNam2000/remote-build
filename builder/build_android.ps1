@@ -3,7 +3,8 @@ param(
     [string]$RepoUrl,
     [string]$Branch = "",
     [string]$BuildId = "android_$(Get-Date -Format 'yyyyMMddHHmmss')",
-    [string]$Lane = "release"
+    [string]$Lane = "release",
+    [string]$Flavor = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -29,10 +30,17 @@ if ($global:ProjectType -eq "flutter") {
     Flutter-Prepare
 }
 
+$global:Flavor = $Flavor
+Write-Host "🎨 Flavor: $( if ($Flavor) { $Flavor } else { '(none)' } )"
+
 # Build
+$buildSuccess = $false
 try {
     Build-Android -Lane $Lane
+    $buildSuccess = $true
 } catch {
+    Write-Host "[WARN] First build attempt failed: $_"
+
     # Retry with compileSdk fix if needed
     $logContent = Get-Content "$env:TEMP\build_log_$BuildId.txt" -ErrorAction SilentlyContinue
     $requiredSdk = ($logContent | Select-String 'compile against version (\d+)' |
@@ -50,13 +58,34 @@ try {
                 }
             }
         }
-        Build-Android -Lane $Lane
-    } else {
-        Write-Host "[ERROR] Build failed: $_"
-        exit 1
+        try {
+            Build-Android -Lane $Lane
+            $buildSuccess = $true
+        } catch {
+            Write-Host "[ERROR] Retry also failed: $_"
+        }
     }
 }
 
-Collect-AndroidArtifact -OutputDir $OutputDir -Lane $Lane
-Cleanup-Temp -Dir $WorkDir
-Write-Host "[OK] Done!"
+# Check if artifact exists regardless of exit code (Fastlane may exit non-zero even on success)
+$ErrorActionPreference = "SilentlyContinue"
+$hasArtifact = $false
+if ($global:ProjectType -eq "flutter") {
+    $hasArtifact = [bool](Get-ChildItem "build\app\outputs" -Recurse -Include "*.apk","*.aab" -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -notmatch "debug" } | Select-Object -First 1)
+} else {
+    $hasArtifact = [bool](Get-ChildItem "." -Recurse -Include "*.apk","*.aab" -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -match "outputs" -and $_.Name -notmatch "debug" } | Select-Object -First 1)
+}
+$ErrorActionPreference = "Stop"
+
+if ($hasArtifact) {
+    if (-not $buildSuccess) {
+        Write-Host '[INFO] Fastlane exited with error but artifact was found - treating as success'
+    }
+    Collect-AndroidArtifact -OutputDir $OutputDir -Lane $Lane
+    Write-Host '[OK] Done!'
+} else {
+    Write-Host '[ERROR] No build artifact found after all attempts'
+    exit 1
+}

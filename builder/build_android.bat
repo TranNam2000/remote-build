@@ -179,11 +179,24 @@ for /f "tokens=2 delims==" %%M in ('wmic computersystem get TotalPhysicalMemory 
     set "JVM_MAX=!HEAP_MB!"
 )
 echo JVM heap: !JVM_MAX!m ^(total RAM: !TOTAL_MB!MB^)
-echo org.gradle.jvmargs=-Xmx!JVM_MAX!m -XX:MaxMetaspaceSize=256m -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -XX:+HeapDumpOnOutOfMemoryError>> "!PROPS!"
+echo org.gradle.jvmargs=-Xmx!JVM_MAX!m -XX:MaxMetaspaceSize=512m -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -XX:+HeapDumpOnOutOfMemoryError>> "!PROPS!"
 echo org.gradle.parallel=false>> "!PROPS!"
 echo org.gradle.caching=false>> "!PROPS!"
 echo org.gradle.workers.max=2>> "!PROPS!"
 echo android.dexOptions.incremental=true>> "!PROPS!"
+
+:: ====== Auto-inject ProGuard dontwarn rules ======
+set "PG_FILES=proguard-rules.pro app\proguard-rules.pro android\app\proguard-rules.pro"
+for %%P in (%PG_FILES%) do (
+    if exist "%%P" (
+        findstr /c:"dontwarn com.bytedance" "%%P" >nul 2>&1
+        if errorlevel 1 (
+            echo -dontwarn com.bytedance.sdk.openadsdk.**>>"%%P"
+            echo -dontwarn com.facebook.infer.annotation.**>>"%%P"
+            echo [OK] Injected dontwarn rules into %%P
+        )
+    )
+)
 
 :: ====== Conditional: Flutter only ======
 if "%PROJECT_TYPE%"=="flutter" (

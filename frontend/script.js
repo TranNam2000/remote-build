@@ -12,31 +12,180 @@ document.addEventListener('DOMContentLoaded', () => {
     const refreshTasksBtn = document.getElementById('refreshTasksBtn');
     let tasksInterval = null;
 
+    // --- Live log streaming ---
+    let currentLogId = null;
+    let currentEventSource = null;
+
+    window.viewBuildLog = function(buildId) {
+        if (currentLogId === buildId) return;
+        stopLogStream();
+        currentLogId = buildId;
+        terminal.innerHTML = '';
+        statusBadge.className = 'badge running';
+        statusBadge.textContent = 'Live';
+        loadTasks();
+        startLogStream(buildId);
+    };
+
+    function stopLogStream() {
+        if (currentEventSource) {
+            try { currentEventSource.close(); } catch(e) {}
+            currentEventSource = null;
+        }
+        if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+        currentLogId = null;
+    }
+
+    let pollTimer = null;
+    let logSeenCount = 0;
+
+    function startLogStream(buildId) {
+        logSeenCount = 0;
+        if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+        pollLogs(buildId);
+        pollTimer = setInterval(() => pollLogs(buildId), 500);
+    }
+
+    function renderLogItem(log) {
+        if (log.type === 'build_success') {
+            const actionDiv = document.createElement('div');
+            actionDiv.className = 'log-line log-success';
+            actionDiv.style.cssText = 'padding:15px;margin-top:10px;background:rgba(35,134,54,0.1);border:1px solid var(--success);border-radius:8px;';
+            const link = document.createElement('a');
+            link.href = log.message;
+            const fileName = log.message.split('/').pop() || 'file';
+            const ext = fileName.split('.').pop().toUpperCase();
+            link.textContent = `📥 Tải xuống (${ext})`;
+            link.style.cssText = 'color:#fff;text-decoration:none;font-weight:bold;display:block;text-align:center;';
+            actionDiv.appendChild(link);
+            terminal.appendChild(actionDiv);
+            terminal.scrollTop = terminal.scrollHeight;
+        } else {
+            const cleanMsg = (log.message || '').replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, "");
+            appendLog(cleanMsg, log.type === 'log' ? 'system' : log.type);
+        }
+    }
+
+    async function pollLogs(buildId) {
+        if (currentLogId !== buildId) { if (pollTimer) clearInterval(pollTimer); return; }
+        try {
+            const res = await fetch(`/api/logs-snapshot/${buildId}`);
+            if (!res.ok) return;
+            const data = await res.json();
+            if (data.logs && data.logs.length > logSeenCount) {
+                const newLogs = data.logs.slice(logSeenCount);
+                for (const log of newLogs) {
+                    logSeenCount++;
+                    if (log.type === 'end') {
+                        statusBadge.className = 'badge offline';
+                        statusBadge.textContent = 'Idle';
+                        if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+                        return;
+                    }
+                    renderLogItem(log);
+                }
+            }
+            if (data.finished) {
+                statusBadge.className = 'badge offline';
+                statusBadge.textContent = 'Idle';
+                if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+            }
+        } catch(e) {}
+    }
+
+    function autoViewRunningBuild(tasks) {
+        const running = tasks.filter(t => t.status === 'running');
+        const queued = tasks.filter(t => t.status === 'queued' || t.status === 'paused');
+        const allActive = [...running, ...queued];
+
+        if (!currentLogId && allActive.length > 0) {
+            viewBuildLog(allActive[0].id);
+        } else if (currentLogId && !tasks.find(t => t.id === currentLogId || t.buildId === currentLogId)) {
+            if (allActive.length > 0) {
+                viewBuildLog(allActive[0].id);
+            }
+        }
+    }
+
     // --- Tasks panel ---
+    function updateBuildButton(hasActive) {
+        if (buildBtn.disabled) return;
+        if (hasActive) {
+            buildBtn.textContent = '➕ Thêm vào hàng đợi';
+            buildBtn.classList.remove('primary');
+            buildBtn.classList.add('queue-mode');
+        } else {
+            buildBtn.textContent = '🚀 Bắt đầu Build';
+            buildBtn.classList.remove('queue-mode');
+            buildBtn.classList.add('primary');
+        }
+    }
+
     async function loadTasks() {
         try {
             const res = await fetch('/api/tasks');
-            const { tasks } = await res.json();
+            const { tasks, active } = await res.json();
+            updateBuildButton(active > 0);
             if (tasks.length === 0) {
                 tasksList.innerHTML = '<p class="no-tasks">Không có build nào đang chạy.</p>';
                 return;
             }
-            tasksList.innerHTML = tasks.map(t => {
+            const running = tasks.filter(t => t.status === 'running');
+            const waiting = tasks.filter(t => t.status === 'queued' || t.status === 'paused');
+            const summary = `<div class="queue-summary">🔄 Đang chạy: ${running.length} | ⏳ Hàng đợi: ${waiting.length} | 📋 Tổng: ${tasks.length}</div>`;
+
+            let order = 0;
+            const runningHtml = running.map(t => {
+                order++;
                 const repo = t.repoUrl.replace('https://github.com/', '').replace('.git', '');
-                const detail = t.status === 'running'
-                    ? `${t.branch} · ${t.elapsed}`
-                    : `${t.branch} · Hàng đợi #${t.position}`;
+                const icon = t.platform === 'android' ? '🤖' : '🍏';
+                const viewing = currentLogId === t.id ? ' task-viewing' : '';
                 return `
-                    <div class="task-item">
+                    <div class="task-item task-running${viewing}" onclick="viewBuildLog('${t.id}')" style="cursor:pointer">
+                        <div class="task-order">${order}</div>
                         <div class="task-info">
-                            <div class="task-name">${t.platform === 'android' ? '🤖' : '🍏'} ${repo}</div>
-                            <div class="task-detail">${detail}</div>
+                            <div class="task-name">${icon} ${repo}</div>
+                            <div class="task-detail">${t.branch} · ${t.elapsed}${viewing ? ' · 📺 Đang xem log' : ''}</div>
                         </div>
-                        <span class="task-status ${t.status}">${t.status === 'running' ? '🔄 Running' : '⏳ Queued'}</span>
-                        <button class="btn-cancel" onclick="cancelTask('${t.id}')">✕ Hủy</button>
+                        <span class="task-status running">🔄 Đang build</span>
+                        <button class="btn-cancel" onclick="event.stopPropagation();cancelTask('${t.buildId || t.id}')">✕ Hủy</button>
                     </div>`;
             }).join('');
-        } catch {}
+
+            const queuedHtml = waiting.map((t, i) => {
+                order++;
+                const repo = t.repoUrl.replace('https://github.com/', '').replace('.git', '');
+                const icon = t.platform === 'android' ? '🤖' : '🍏';
+                const isPaused = t.status === 'paused';
+                const statusClass = isPaused ? 'paused' : 'queued';
+                const statusLabel = isPaused ? '⏸️ Tạm dừng' : `⏳ #${t.position}`;
+                const pauseBtn = isPaused
+                    ? `<button class="btn-queue btn-resume" onclick="togglePause('${t.id}')" title="Tiếp tục">▶</button>`
+                    : `<button class="btn-queue btn-pause" onclick="togglePause('${t.id}')" title="Tạm dừng">⏸</button>`;
+                const moveUp = t.position > 1 ? `<button class="btn-queue btn-move" onclick="moveQueue('${t.id}','up')" title="Lên">▲</button>` : '';
+                const moveDown = t.position < waiting.length ? `<button class="btn-queue btn-move" onclick="moveQueue('${t.id}','down')" title="Xuống">▼</button>` : '';
+                const viewing = currentLogId === t.id ? ' task-viewing' : '';
+                return `
+                    <div class="task-item task-${statusClass}${viewing}" onclick="viewBuildLog('${t.id}')" style="cursor:pointer">
+                        <div class="task-order">${order}</div>
+                        <div class="task-info">
+                            <div class="task-name">${icon} ${repo}</div>
+                            <div class="task-detail">${t.branch} · ${isPaused ? 'Đã tạm dừng' : 'Chờ đến lượt'}${viewing ? ' · 📺 Đang xem log' : ''}</div>
+                        </div>
+                        <span class="task-status ${statusClass}">${statusLabel}</span>
+                        <div class="task-actions" onclick="event.stopPropagation()">
+                            ${moveUp}${moveDown}
+                            ${pauseBtn}
+                            <button class="btn-queue btn-remove" onclick="removeQueue('${t.id}')" title="Xóa">✕</button>
+                        </div>
+                    </div>`;
+            }).join('');
+
+            tasksList.innerHTML = summary + runningHtml + queuedHtml;
+            autoViewRunningBuild(tasks);
+        } catch (e) {
+            console.error('loadTasks error:', e);
+        }
     }
 
     window.cancelTask = async function(id) {
@@ -54,6 +203,30 @@ document.addEventListener('DOMContentLoaded', () => {
             } else {
                 alert(data.error || 'Không thể hủy');
             }
+        } catch (e) { alert('Lỗi: ' + e.message); }
+    };
+
+    window.togglePause = async function(id) {
+        try {
+            await fetch('/api/queue/pause', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
+            loadTasks();
+        } catch (e) { alert('Lỗi: ' + e.message); }
+    };
+
+    window.moveQueue = async function(id, direction) {
+        try {
+            await fetch('/api/queue/move', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, direction }) });
+            loadTasks();
+        } catch (e) { alert('Lỗi: ' + e.message); }
+    };
+
+    window.removeQueue = async function(id) {
+        if (!confirm('Xóa build này khỏi hàng đợi?')) return;
+        try {
+            const res = await fetch('/api/queue/remove', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
+            const data = await res.json();
+            if (data.success) { appendLog('🗑️ Đã xóa build khỏi hàng đợi.', 'info'); loadTasks(); }
+            else alert(data.error || 'Không thể xóa');
         } catch (e) { alert('Lỗi: ' + e.message); }
     };
 
@@ -238,11 +411,11 @@ document.addEventListener('DOMContentLoaded', () => {
         const flavor = (platform === 'android' && detectedFlavors.length > 0) ? flavorSelect.value : '';
 
         buildBtn.disabled = true;
-        buildBtn.textContent = 'Đang Build...';
-        statusBadge.className = 'badge running';
-        statusBadge.textContent = 'Running';
-        terminal.innerHTML = '';
+        buildBtn.textContent = 'Đang gửi...';
+        setTimeout(() => { buildBtn.disabled = false; loadTasks(); }, 3000);
 
+        stopLogStream();
+        terminal.innerHTML = '';
         appendLog(`Bắt đầu yêu cầu build`, 'info');
         appendLog(`Repository: ${repoUrl}`, 'info');
         if (branch) appendLog(`Branch: ${branch}`, 'info');
@@ -251,72 +424,34 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             const response = await fetch('/api/build', {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ repoUrl, branch, token, platform, lane, flavor })
             });
+            const data = await response.json();
 
             if (!response.ok) {
-                const errorData = await response.json();
-                appendLog(`Error: ${errorData.error}`, 'error');
-                throw new Error(errorData.error);
+                appendLog(`Error: ${data.error}`, 'error');
+            } else if (data.queued) {
+                appendLog(`⏳ Đã thêm vào hàng đợi — Vị trí #${data.position}`, 'info');
+                viewBuildLog(data.queueId);
+            } else {
+                appendLog(`✅ Build bắt đầu ngay!`, 'success');
+                viewBuildLog(data.queueId);
             }
-
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder('utf-8');
-            let done = false;
-
-            while (!done) {
-                const { value, done: readerDone } = await reader.read();
-                done = readerDone;
-                if (value) {
-                    const chunk = decoder.decode(value);
-                    const lines = chunk.split('\n\n');
-                    for (const line of lines) {
-                        if (line.startsWith('data: ')) {
-                            try {
-                                const data = JSON.parse(line.substring(6));
-                                if (data.type === 'build_success') {
-                                    const actionDiv = document.createElement('div');
-                                    actionDiv.className = 'log-line log-success';
-                                    actionDiv.style.padding = '15px';
-                                    actionDiv.style.marginTop = '10px';
-                                    actionDiv.style.backgroundColor = 'rgba(35, 134, 54, 0.1)';
-                                    actionDiv.style.border = '1px solid var(--success)';
-                                    actionDiv.style.borderRadius = '8px';
-                                    
-                                    const link = document.createElement('a');
-                                    link.href = data.message;
-                                    link.textContent = `📥 Tải xuống kết quả build (${data.platform.toUpperCase()})`;
-                                    link.style.color = '#fff';
-                                    link.style.textDecoration = 'none';
-                                    link.style.fontWeight = 'bold';
-                                    link.style.display = 'block';
-                                    link.style.textAlign = 'center';
-                                    
-                                    actionDiv.appendChild(link);
-                                    terminal.appendChild(actionDiv);
-                                } else {
-                                    appendLog(data.message, data.type === 'log' ? 'system' : data.type);
-                                }
-                            } catch (err) {
-                                // Incomplete JSON chunk potentially, ignore or buffer
-                                console.error('Error parsing SSE data:', err);
-                            }
-                        }
-                    }
-                }
-            }
-
         } catch (error) {
             appendLog(`Yêu cầu thất bại: ${error.message}`, 'error');
-        } finally {
-            buildBtn.disabled = false;
-            buildBtn.textContent = 'Bắt đầu Build';
-            statusBadge.className = 'badge offline';
-            statusBadge.textContent = 'Idle';
-            appendLog('--- Kết thúc phiên ---', 'system');
         }
+        loadTasks();
     });
 });
+
+function appendLog(message, type = 'system') {
+    const terminal = document.getElementById('terminal');
+    const div = document.createElement('div');
+    div.className = `log-line log-${type}`;
+    // Use innerHTML but escapes HTML to prevent XSS while allowing structured spacing
+    const safeText = document.createTextNode(message);
+    div.appendChild(safeText);
+    terminal.appendChild(div);
+    terminal.scrollTop = terminal.scrollHeight;
+}
