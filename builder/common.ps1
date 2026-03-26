@@ -350,10 +350,10 @@ function Download-GitHubZip {
     if (Test-Path $extractPath) { Remove-Item -Recurse -Force $extractPath }
     New-Item -ItemType Directory -Force -Path $extractPath | Out-Null
     # Try 7-Zip first (no path limit), fallback to .NET ZipFile
-    $sz = Get-Command '7z' -ErrorAction SilentlyContinue
-    if (-not $sz) { $sz = Get-Item 'C:\Program Files\7-Zip\7z.exe' -ErrorAction SilentlyContinue }
-    if ($sz) {
-        & $sz.Source x $zipPath "-o$extractPath" -y | Out-Null
+    $szExe = (Get-Command '7z' -ErrorAction SilentlyContinue)?.Source
+    if (-not $szExe) { $szExe = 'C:\Program Files\7-Zip\7z.exe' }
+    if (Test-Path $szExe) {
+        & $szExe x $zipPath "-o$extractPath" -y | Out-Null
     } else {
         Add-Type -AssemblyName System.IO.Compression.FileSystem
         [System.IO.Compression.ZipFile]::ExtractToDirectory($zipPath, $extractPath)
