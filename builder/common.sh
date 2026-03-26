@@ -365,9 +365,8 @@ optimize_gradle() {
     local reserve_mb=2048
     local heap_mb=$(( avail_mb - reserve_mb ))
     [ "$heap_mb" -lt 1024 ] && heap_mb=1024
-    [ "$heap_mb" -gt 4096 ] && heap_mb=4096
+    # Use all logical cores minus 1 (leave 1 for OS), minimum 1
     local workers_max=$(( cpu_cores - 1 ))
-    [ "$workers_max" -gt 6 ] && workers_max=6
     [ "$workers_max" -lt 1 ] && workers_max=1
     echo "✅ Detected: ${cpu_cores} cores, ${total_mb}MB total, ${avail_mb}MB free -> heap=${heap_mb}m, workers=${workers_max}"
 
