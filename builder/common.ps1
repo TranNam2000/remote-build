@@ -216,6 +216,27 @@ function Setup-Prerequisites {
         Write-Host "[SKIP] Skipping Flutter (native project)"
     }
 
+    # 7-Zip (required for extracting ZIPs with long paths)
+    $szExe = if (Get-Command '7z' -ErrorAction SilentlyContinue) { (Get-Command '7z').Source } else { 'C:\Program Files\7-Zip\7z.exe' }
+    if (-not (Test-Path $szExe)) {
+        Write-Host "[INSTALL] Installing 7-Zip (required for long-path ZIP extraction)..."
+        if ($hasWinget)    { winget install --id 7zip.7zip -e --silent }
+        elseif ($hasChoco) { choco install 7zip -y }
+        else { Write-Host "[WARN] Install 7-Zip manually: https://www.7-zip.org" }
+        Refresh-Path
+    }
+    $szVer = try { (& 'C:\Program Files\7-Zip\7z.exe' i 2>&1) | Select-Object -First 1 } catch { "not found" }
+    Write-Host "[OK] 7-Zip: $szVer"
+
+    # Enable Windows long paths (>260 chars) -- required for deep repo/submodule trees
+    try {
+        Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" `
+            -Name "LongPathsEnabled" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+        Write-Host "[OK] Long paths enabled"
+    } catch {
+        Write-Host "[WARN] Could not enable long paths (need Admin)"
+    }
+
     # Ruby + Fastlane (required for Fastlane builds)
     if (-not (Get-Command ruby -ErrorAction SilentlyContinue)) {
         Write-Host "[INSTALL] Installing Ruby..."
@@ -370,9 +391,21 @@ function Download-GitHubZip {
     # Try 7-Zip first (no path limit), fallback to .NET ZipFile
     $szCmd = Get-Command '7z' -ErrorAction SilentlyContinue
     $szExe = if ($szCmd) { $szCmd.Source } else { 'C:\Program Files\7-Zip\7z.exe' }
+    # Auto-install 7-Zip if missing (required for long-path extraction)
+    if (-not (Test-Path $szExe)) {
+        Write-Host "[INSTALL] 7-Zip not found, installing (required for long paths)..."
+        $hasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
+        $hasChoco  = $null -ne (Get-Command choco  -ErrorAction SilentlyContinue)
+        if ($hasWinget)    { winget install --id 7zip.7zip -e --silent --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null }
+        elseif ($hasChoco) { choco install 7zip -y 2>&1 | Out-Null }
+        Refresh-Path
+        $szCmd = Get-Command '7z' -ErrorAction SilentlyContinue
+        $szExe = if ($szCmd) { $szCmd.Source } else { 'C:\Program Files\7-Zip\7z.exe' }
+    }
     if (Test-Path $szExe) {
         & $szExe x $zipPath "-o$extractPath" -y | Out-Null
     } else {
+        Write-Host "[WARN] 7-Zip not available, using .NET ZipFile (may fail on long paths)"
         Add-Type -AssemblyName System.IO.Compression.FileSystem
         [System.IO.Compression.ZipFile]::ExtractToDirectory($zipPath, $extractPath)
     }
