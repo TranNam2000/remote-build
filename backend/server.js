@@ -544,8 +544,9 @@ async function startBuild(job) {
         }
     }
 
+    const buildTypeLabel = lane === 'bundle' ? 'AAB' : lane === 'release' ? 'APK' : lane ? lane.toUpperCase() : '';
     notifyTelegram(
-        `🚀 *Build bắt đầu!*\n\n📌 *Dự án:* ${repoNameShort}\n🌿 *Nhánh:* ${branch || 'default'}\n${platform === 'android' ? '🤖' : '🍏'} *Platform:* ${(platform || 'auto').toUpperCase()}${lane ? ` (${lane})` : ''}${flavor ? `\n🎨 *Flavor:* ${flavor}` : ''}`
+        `🚀 *Build bắt đầu!*\n\n📌 *Dự án:* ${repoNameShort}\n🌿 *Nhánh:* ${branch || 'default'}\n${platform === 'android' ? '🤖' : '🍏'} *Platform:* ${(platform || 'auto').toUpperCase()}${buildTypeLabel ? ` (${buildTypeLabel})` : ''}${flavor ? `\n🌿 *Môi trường:* ${flavor}` : ''}`
     );
 
     // Validate platform compatibility
@@ -776,8 +777,9 @@ async function startBuild(job) {
                 const buildType = fileName.endsWith('.aab') ? 'AAB' : fileName.endsWith('.apk') ? 'APK' : fileName.endsWith('.ipa') ? 'IPA' : '';
                 const buildTypeLine = buildType ? `\n📋 **Loại:** ${buildType}` : '';
 
+                const flavorLine = flavor ? `\n🌿 **Môi trường:** ${flavor}` : '';
                 notifyTelegram(
-                    `✅ **Build Thành Công!**\n\n📌 **Dự án:** ${repoName}\n🌿 **Nhánh:** ${branch || 'default'}\n${icon} **Nền tảng:** ${platformName}${buildTypeLine}${versionLine}\n⏱️ **Thời gian:** ${timeStr}`,
+                    `✅ **Build Thành Công!**\n\n📌 **Dự án:** ${repoName}\n🌿 **Nhánh:** ${branch || 'default'}\n${icon} **Nền tảng:** ${platformName}${buildTypeLine}${flavorLine}${versionLine}\n⏱️ **Thời gian:** ${timeStr}`,
                     [[{ text: `📥 Tải ${buildType || 'file'}`, url: fullUrl }]]
                 );
             } else {
@@ -786,8 +788,9 @@ async function startBuild(job) {
                 const repoName = repoUrl.replace('https://github.com/', '').replace('.git', '');
                 const exitMsg = code !== null ? `exit code ${code}` : 'process crashed';
                 sendLog(`Build failed (${exitMsg}) ❌`, 'error');
+                const flavorFailLine = flavor ? `\n🌿 **Môi trường:** ${flavor}` : '';
                 notifyTelegram(
-                    `❌ **Build Thất Bại!**\n\n📌 **Dự án:** ${repoName}\n🌿 **Nhánh:** ${branch || 'default'}\n${icon} **Nền tảng:** ${platformName}\n⚠️ **Lỗi:** ${exitMsg}\n⏱️ **Thời gian:** ${timeStr}`
+                    `❌ **Build Thất Bại!**\n\n📌 **Dự án:** ${repoName}\n🌿 **Nhánh:** ${branch || 'default'}\n${icon} **Nền tảng:** ${platformName}${flavorFailLine}\n⚠️ **Lỗi:** ${exitMsg}\n⏱️ **Thời gian:** ${timeStr}`
                 );
             }
         } catch (err) {
