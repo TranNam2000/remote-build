@@ -345,7 +345,25 @@ function Download-GitHubZip {
     Write-Host "[INFO] Downloading $RepoFullName @ $Ref ..."
     $zipPath = Join-Path $DestDir "_download_$(Split-Path $FolderName -Leaf).zip"
     $extractPath = Join-Path $DestDir "_extract_$(Split-Path $FolderName -Leaf)"
-    Invoke-WebRequest -Uri $zipUrl -Headers $headers -OutFile $zipPath -MaximumRedirection 10 -UseBasicParsing
+    # Use HttpClient for fast download (Invoke-WebRequest is very slow on PS 5.1)
+    Add-Type -AssemblyName System.Net.Http
+    $handler = New-Object System.Net.Http.HttpClientHandler
+    $handler.AllowAutoRedirect = $true
+    $handler.MaxAutomaticRedirections = 10
+    $client = New-Object System.Net.Http.HttpClient($handler)
+    $client.DefaultRequestHeaders.Add("User-Agent", "Flutter-Remote-Builder")
+    if ($Token) { $client.DefaultRequestHeaders.Add("Authorization", "token $Token") }
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $response = $client.GetAsync($zipUrl).Result
+    if (-not $response.IsSuccessStatusCode) {
+        throw "Download failed: $($response.StatusCode) $($response.ReasonPhrase)"
+    }
+    $fs = [System.IO.File]::Create($zipPath)
+    try { $response.Content.CopyToAsync($fs).Wait() } finally { $fs.Close() }
+    $client.Dispose()
+    $sizeMB = [math]::Round((Get-Item $zipPath).Length / 1MB, 1)
+    $elapsed = [math]::Round($sw.Elapsed.TotalSeconds, 1)
+    Write-Host "[OK] Downloaded ${sizeMB}MB in ${elapsed}s"
     # Cleanup extract dir if leftover from failed run
     if (Test-Path $extractPath) { Remove-Item -Recurse -Force $extractPath }
     New-Item -ItemType Directory -Force -Path $extractPath | Out-Null
