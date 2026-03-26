@@ -120,6 +120,10 @@ async function fetchAllGitHubPages(url, token) {
 // --- Telegram ---
 
 function notifyTelegram(message, buttons) {
+    if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
+        console.log('[TELEGRAM] Skipped — no token/chat_id configured');
+        return;
+    }
     const params = {
         chat_id: TELEGRAM_CHAT_ID,
         parse_mode: 'Markdown',
@@ -128,11 +132,15 @@ function notifyTelegram(message, buttons) {
     if (buttons) {
         params.reply_markup = JSON.stringify({ inline_keyboard: buttons });
     }
+    console.log(`[TELEGRAM] Sending: ${message.substring(0, 60)}...`);
+    fetch(`https://api.github.com/repos/`, { method: 'HEAD' }).catch(() => {}); // warmup DNS
     fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(params)
-    }).catch(console.error);
+    }).then(r => {
+        if (!r.ok) console.log(`[TELEGRAM] Error: ${r.status} ${r.statusText}`);
+    }).catch(e => console.log(`[TELEGRAM] Failed: ${e.message}`));
 }
 
 // --- API Routes ---
