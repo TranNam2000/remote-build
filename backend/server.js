@@ -173,7 +173,7 @@ app.post('/api/detect', async (req, res) => {
                 cloneUrl = urlObj.toString();
             } catch { }
         }
-        const { projectType, flavors } = await detectProjectType(cloneUrl, branch);
+        const { projectType, flavors } = await detectProjectTypeViaAPI(repoUrl, branch, token);
         const isMac = process.platform === 'darwin';
         const canBuildIos = isMac;
 
@@ -207,51 +207,94 @@ app.post('/api/branches', async (req, res) => {
 
 // --- Project Type Detection ---
 
+function parseFlavorsFromContent(content) {
+    const startIdx = content.indexOf('productFlavors');
+    if (startIdx === -1) return [];
+    const braceStart = content.indexOf('{', startIdx);
+    if (braceStart === -1) return [];
+    let depth = 0, braceEnd = -1;
+    for (let i = braceStart; i < content.length; i++) {
+        if (content[i] === '{') depth++;
+        else if (content[i] === '}') { depth--; if (depth === 0) { braceEnd = i; break; } }
+    }
+    if (braceEnd === -1) return [];
+    const block = content.substring(braceStart + 1, braceEnd);
+    const flavors = [];
+    const keywords = ['productFlavors', 'android', 'buildTypes', 'defaultConfig', 'signingConfigs', 'compileOptions', 'kotlinOptions', 'buildFeatures', 'packaging', 'lint'];
+    for (const m of block.matchAll(/^\s+(\w+)\s*\{/gm)) {
+        if (!keywords.includes(m[1])) flavors.push(m[1]);
+    }
+    for (const m of block.matchAll(/create\("(\w+)"\)/g)) {
+        flavors.push(m[1]);
+    }
+    return flavors;
+}
+
 function parseFlavors(sourceDir) {
-    // Search for productFlavors in build.gradle files
     const gradleFiles = [
         path.join(sourceDir, 'app/build.gradle'),
         path.join(sourceDir, 'app/build.gradle.kts'),
         path.join(sourceDir, 'android/app/build.gradle'),
         path.join(sourceDir, 'android/app/build.gradle.kts'),
     ];
-
     for (const gFile of gradleFiles) {
         if (!fs.existsSync(gFile)) continue;
-        const content = fs.readFileSync(gFile, 'utf8');
-
-        // Match productFlavors block — find matching closing brace by counting
-        const startIdx = content.indexOf('productFlavors');
-        if (startIdx === -1) continue;
-        const braceStart = content.indexOf('{', startIdx);
-        if (braceStart === -1) continue;
-        let depth = 0;
-        let braceEnd = -1;
-        for (let i = braceStart; i < content.length; i++) {
-            if (content[i] === '{') depth++;
-            else if (content[i] === '}') { depth--; if (depth === 0) { braceEnd = i; break; } }
-        }
-        if (braceEnd === -1) continue;
-        const match = [null, content.substring(braceStart + 1, braceEnd)];
-        const block = match[1];
-        // Groovy: flavorName { ... }  or  Kts: create("flavorName") { ... }
-        const flavors = [];
-        // Match any indented identifier followed by {
-        const groovyMatches = block.matchAll(/^\s+(\w+)\s*\{/gm);
-        for (const m of groovyMatches) {
-            // Skip keywords that aren't flavor names
-            if (!['productFlavors', 'android', 'buildTypes', 'defaultConfig', 'signingConfigs', 'compileOptions', 'kotlinOptions', 'buildFeatures', 'packaging', 'lint'].includes(m[1])) {
-                flavors.push(m[1]);
-            }
-        }
-        const ktsMatches = block.matchAll(/create\("(\w+)"\)/g);
-        for (const m of ktsMatches) {
-            flavors.push(m[1]);
-        }
-
+        const flavors = parseFlavorsFromContent(fs.readFileSync(gFile, 'utf8'));
         if (flavors.length > 0) return flavors;
     }
     return [];
+}
+
+async function detectProjectTypeViaAPI(repoUrl, branch, token) {
+    const m = repoUrl.match(/github\.com[/:]([\w.-]+\/[\w.-]+?)(?:\.git)?$/);
+    if (!m) return { projectType: null, flavors: [] };
+    const repoFullName = m[1];
+    const ref = branch ? `?ref=${encodeURIComponent(branch)}` : '';
+    const headers = token ? GITHUB_HEADERS(token) : { 'User-Agent': 'Flutter-Remote-Builder' };
+
+    async function fileExists(filePath) {
+        try {
+            const res = await fetch(`https://api.github.com/repos/${repoFullName}/contents/${filePath}${ref}`, { headers });
+            return res.status === 200;
+        } catch { return false; }
+    }
+
+    async function fetchFileContent(filePath) {
+        try {
+            const res = await fetch(`https://api.github.com/repos/${repoFullName}/contents/${filePath}${ref}`, { headers });
+            if (!res.ok) return null;
+            const data = await res.json();
+            return data.content ? Buffer.from(data.content, 'base64').toString('utf8') : null;
+        } catch { return null; }
+    }
+
+    let projectType = null;
+    let flavors = [];
+
+    if (await fileExists('pubspec.yaml')) {
+        projectType = 'flutter';
+    } else if (
+        await fileExists('build.gradle') || await fileExists('build.gradle.kts') ||
+        await fileExists('app/build.gradle') || await fileExists('app/build.gradle.kts') ||
+        await fileExists('settings.gradle') || await fileExists('settings.gradle.kts') ||
+        await fileExists('gradlew')
+    ) {
+        projectType = 'android';
+    } else if (await fileExists('ios/Runner.xcodeproj') || await fileExists('ios/Runner.xcworkspace')) {
+        projectType = 'ios';
+    }
+
+    if (projectType === 'flutter' || projectType === 'android') {
+        for (const gPath of ['app/build.gradle', 'app/build.gradle.kts', 'android/app/build.gradle', 'android/app/build.gradle.kts']) {
+            const content = await fetchFileContent(gPath);
+            if (content) {
+                const parsed = parseFlavorsFromContent(content);
+                if (parsed.length > 0) { flavors = parsed; break; }
+            }
+        }
+    }
+
+    return { projectType, flavors };
 }
 
 async function detectProjectType(repoUrl, branch) {
@@ -288,7 +331,10 @@ async function detectProjectType(repoUrl, branch) {
         } else if (fs.existsSync(path.join(sourceDir, 'build.gradle')) ||
             fs.existsSync(path.join(sourceDir, 'build.gradle.kts')) ||
             fs.existsSync(path.join(sourceDir, 'app/build.gradle')) ||
-            fs.existsSync(path.join(sourceDir, 'app/build.gradle.kts'))) {
+            fs.existsSync(path.join(sourceDir, 'app/build.gradle.kts')) ||
+            fs.existsSync(path.join(sourceDir, 'settings.gradle')) ||
+            fs.existsSync(path.join(sourceDir, 'settings.gradle.kts')) ||
+            fs.existsSync(path.join(sourceDir, 'gradlew'))) {
             projectType = 'android';
         } else if (fs.existsSync(path.join(sourceDir, 'ios/Runner.xcodeproj')) ||
             fs.existsSync(path.join(sourceDir, 'ios/Runner.xcworkspace'))) {
