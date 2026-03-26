@@ -702,7 +702,7 @@ async function startBuild(job) {
                 let versionInfo = '';
                 try {
                     const tempDir = process.platform === 'win32'
-                        ? path.join(process.env.TEMP || '', `flutter_build_${buildId}`, 'source_code')
+                        ? path.join('C:\\b', buildId, 'source_code')
                         : path.join('/tmp', `flutter_build_${buildId}`, 'source_code');
                     // Tìm version theo thứ tự ưu tiên
                     const candidates = [
