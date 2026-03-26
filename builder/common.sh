@@ -162,6 +162,12 @@ clone_repo() {
         git clone -c core.longpaths=true "$repo_url" source_code
     fi
     cd source_code
+    # Init submodules if .gitmodules exists
+    if [ -f ".gitmodules" ]; then
+        echo "[INFO] Submodules detected, initializing..."
+        git submodule update --init --recursive
+        echo "[OK] Submodules initialized"
+    fi
     # Fix executable permissions (gradlew, etc.)
     chmod +x gradlew 2>/dev/null || true
     chmod +x android/gradlew 2>/dev/null || true

@@ -353,6 +353,12 @@ function Clone-Repo {
         git clone -c core.longpaths=true $RepoUrl source_code
     }
     Set-Location source_code
+    # Init submodules if .gitmodules exists
+    if (Test-Path ".gitmodules") {
+        Write-Host "[INFO] Submodules detected, initializing..."
+        git submodule update --init --recursive
+        Write-Host "[OK] Submodules initialized"
+    }
 }
 
 # --- Load .env ---
