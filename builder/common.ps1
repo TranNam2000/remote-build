@@ -866,9 +866,22 @@ function Collect-AndroidArtifact {
     }
     if ($artifact) {
         Copy-Item $artifact.FullName "$OutputDir\$($artifact.Name)" -Force
-        $outputName = if ($isDebug) { "app-debug.apk" } else { "app-release.apk" }
+        $ext = [System.IO.Path]::GetExtension($artifact.Name)
+        # Detect version from build files
+        $version = ""
+        foreach ($vf in @("pubspec.yaml", "app\build.gradle.kts", "app\build.gradle", "android\app\build.gradle.kts", "android\app\build.gradle")) {
+            if (-not (Test-Path $vf)) { continue }
+            $vc = Get-Content $vf -Raw -ErrorAction SilentlyContinue
+            if ($vf -eq "pubspec.yaml") {
+                if ($vc -match '(?m)^version:\s*(\S+)') { $version = $Matches[1]; break }
+            } else {
+                if ($vc -match 'versionName\s*=\s*"([^"]+)"') { $version = $Matches[1]; break }
+            }
+        }
+        $versionSuffix = if ($version) { "-v$version" } else { "" }
+        $outputName = if ($isDebug) { "app-debug$versionSuffix$ext" } else { "app-release$versionSuffix$ext" }
         Copy-Item $artifact.FullName "$OutputDir\$outputName" -Force -ErrorAction SilentlyContinue
-        Write-Host "Saved to $OutputDir\$($artifact.Name)"
+        Write-Host "Saved to $OutputDir\$($artifact.Name) (version: $( if ($version) { $version } else { 'unknown' } ))"
     } else {
         Write-Host "Error: No build artifact found!"
         exit 1
