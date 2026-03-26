@@ -574,8 +574,10 @@ function Optimize-Gradle {
     # Reserve 2GB for OS + Flutter/Dart, use the rest for Gradle heap
     $reserveMB = 2048
     $heapMB = [math]::Floor($availMB - $reserveMB)
-    # Clamp heap: min 1024, max based on available RAM
+    # Cap: min 1024MB, max 60% of total RAM or 8192MB (whichever is smaller)
+    $heapCap = [math]::Min([math]::Floor($totalMB * 0.6), 8192)
     if ($heapMB -lt 1024) { $heapMB = 1024 }
+    if ($heapMB -gt $heapCap) { $heapMB = $heapCap }
     # Use all logical cores minus 1 (leave 1 for OS), minimum 1
     $workersMax = [math]::Max(1, $cpuCores - 1)
     Write-Host "[OK] Detected: ${cpuCores} cores, ${totalMB}MB total, ${availMB}MB free -> heap=${heapMB}m, workers=${workersMax}"

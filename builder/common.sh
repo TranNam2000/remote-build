@@ -364,7 +364,11 @@ optimize_gradle() {
     # Reserve 2GB for OS + Flutter/Dart, use the rest for Gradle heap
     local reserve_mb=2048
     local heap_mb=$(( avail_mb - reserve_mb ))
+    # Cap: max 60% of total RAM or 8192MB (whichever is smaller)
+    local heap_cap=$(( total_mb * 60 / 100 ))
+    [ "$heap_cap" -gt 8192 ] && heap_cap=8192
     [ "$heap_mb" -lt 1024 ] && heap_mb=1024
+    [ "$heap_mb" -gt "$heap_cap" ] && heap_mb=$heap_cap
     # Use all logical cores minus 1 (leave 1 for OS), minimum 1
     local workers_max=$(( cpu_cores - 1 ))
     [ "$workers_max" -lt 1 ] && workers_max=1
