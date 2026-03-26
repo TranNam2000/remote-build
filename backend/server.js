@@ -492,7 +492,7 @@ async function startBuild(job) {
 
     const buildTypeLabel = lane === 'bundle' ? 'AAB' : lane === 'release' ? 'APK' : lane ? lane.toUpperCase() : '';
     notifyTelegram(
-        `🚀 *Build bắt đầu!*\n\n📌 *Dự án:* ${repoNameShort}\n🌿 *Nhánh:* ${branch || 'default'}\n${platform === 'android' ? '🤖' : '🍏'} *Platform:* ${(platform || 'auto').toUpperCase()}${buildTypeLabel ? ` (${buildTypeLabel})` : ''}${flavor ? `\n🌿 *Môi trường:* ${flavor}` : ''}`
+        `🚀 *Bắt đầu Build!*\n\n📌 *Dự án:* ${repoNameShort}\n🌿 *Nhánh:* ${branch || 'default'}\n${platform === 'android' ? '🤖' : '🍏'} *Platform:* ${(platform || 'auto').toUpperCase()}${buildTypeLabel ? ` (${buildTypeLabel})` : ''}${flavor ? `\n🌿 *Môi trường:* ${flavor}` : ''}`
     );
 
     // Validate platform compatibility
