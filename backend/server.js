@@ -455,6 +455,26 @@ const buildLogs = new Map(); // buildId|queueId → { logs: [], listeners: Set, 
 const BUILD_LOGS_DIR = path.join(__dirname, '../builder/build_logs');
 if (!fs.existsSync(BUILD_LOGS_DIR)) fs.mkdirSync(BUILD_LOGS_DIR, { recursive: true });
 
+function getTempWorkDir(buildId) {
+    return process.platform === 'win32'
+        ? path.join('C:\\b', buildId)
+        : path.join('/tmp', `flutter_build_${buildId}`);
+}
+
+function cleanupBuildWorkDir(buildId, sendLog) {
+    const workDir = getTempWorkDir(buildId);
+    try {
+        if (fs.existsSync(workDir)) {
+            fs.rmSync(workDir, { recursive: true, force: true });
+            if (typeof sendLog === 'function') sendLog(`🧹 Đã xóa thư mục tạm: ${workDir}`, 'info');
+            console.log(`[CLEANUP] Removed temp work dir: ${workDir}`);
+        }
+    } catch (e) {
+        console.error(`[CLEANUP] Failed to remove temp work dir ${workDir}:`, e.message);
+        if (typeof sendLog === 'function') sendLog(`⚠️ Không thể xóa thư mục tạm: ${workDir}`, 'warn');
+    }
+}
+
 function getBuildLog(id) {
     if (!buildLogs.has(id)) {
         const logFile = path.join(BUILD_LOGS_DIR, `${id}.log`);
@@ -942,6 +962,7 @@ app.post('/api/cancel', (req, res) => {
             }
         } catch { }
         active.job.sendLog('⛔ Build đã bị hủy bởi người dùng.', 'error');
+        cleanupBuildWorkDir(id, active.job.sendLog);
         notifyTelegram(`⛔ <b>Build Đã Hủy</b>\n\n📌 ${escapeHtml(active.job.repoUrl)}\n⏱️ ID: ${escapeHtml(id)}`);
         activeBuilds.delete(id);
         emitLogEnd(active.job.queueId);
