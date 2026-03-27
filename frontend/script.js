@@ -359,7 +359,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 appendLog(`📋 Flutter project — chọn platform build.`, 'success');
                 platformSelect.innerHTML = `<option value="android">🤖 Android</option><option value="ios">🍏 iOS</option>`;
                 platformSelectGroup.style.display = 'block';
-                // Chờ user chọn platform rồi mới hiện build type + flavor
+                // Android là default → hiện build type + flavor ngay
+                buildTypeGroup.style.display = 'block';
+                if (detectedFlavors.length > 0) flavorGroup.style.display = 'block';
             } else if (detectedProjectType === 'android') {
                 // Native Android → tự động chọn Android, không cần dropdown platform
                 appendLog(`📋 Android project — tự động chọn platform Android.`, 'success');

@@ -187,13 +187,14 @@ app.post('/api/detect', async (req, res) => {
                 cloneUrl = urlObj.toString();
             } catch { }
         }
-        const { projectType, flavors } = await detectProjectTypeViaAPI(repoUrl, branch, token);
+        const { projectType, flavors, version } = await detectProjectTypeViaAPI(repoUrl, branch, token);
         const isMac = process.platform === 'darwin';
         const canBuildIos = isMac;
 
         res.json({
             projectType: projectType || 'unknown',
             flavors,
+            version: version || '',
             isMac,
             canBuildIos,
             needsPlatformSelection: projectType === 'flutter' && isMac
@@ -302,6 +303,7 @@ async function detectProjectTypeViaAPI(repoUrl, branch, token) {
 
     let projectType = null;
     let flavors = [];
+    let version = '';
 
     const tree = await getRepoTree();
     console.log(`[detect] ${repoFullName} — tree: ${tree ? tree.length + ' files' : 'failed'}`);
@@ -318,6 +320,39 @@ async function detectProjectTypeViaAPI(repoUrl, branch, token) {
         }
 
         console.log(`[detect] ${repoFullName} — projectType: ${projectType}`);
+
+        // Detect version from pubspec.yaml or build.gradle
+        if (projectType === 'flutter') {
+            const pubspec = await fetchFileContent('pubspec.yaml');
+            if (pubspec) {
+                const vm = pubspec.match(/^version:\s*([\d.]+)/m);
+                if (vm) version = vm[1];
+            }
+        }
+        if (!version && projectType === 'android') {
+            const versionFiles = tree
+                .filter(f => /build\.gradle(\.kts)?$/.test(f) && (f.includes('/app/') || f.startsWith('app/')))
+                .slice(0, 3);
+            for (const vf of versionFiles) {
+                const content = await fetchFileContent(vf);
+                if (content) {
+                    const vn = content.match(/versionName\s*[=(]?\s*(?:["']([^"']+)["']|(\d[\d.]*(?:-\w+)?))/);
+                    if (vn) { version = vn[1] || vn[2]; break; }
+                }
+            }
+        }
+        // Fallback: gradle.properties (Android only)
+        if (!version && projectType === 'android') {
+            const propFiles = tree.filter(f => f === 'gradle.properties' || f.endsWith('/gradle.properties'));
+            for (const pf of propFiles) {
+                const content = await fetchFileContent(pf);
+                if (content) {
+                    const vn = content.match(/^versionName\s*=\s*(.+)$/m);
+                    if (vn) { version = vn[1].trim(); break; }
+                }
+            }
+        }
+        console.log(`[detect] ${repoFullName} — version: ${version || 'unknown'}`);
 
         if (projectType === 'flutter' || projectType === 'android') {
             // Tìm tất cả build.gradle files, ưu tiên file trong thư mục app/
@@ -351,6 +386,11 @@ async function detectProjectTypeViaAPI(repoUrl, branch, token) {
 
         if (await checkFile('pubspec.yaml')) {
             projectType = 'flutter';
+            const pubspec = await fetchFileContent('pubspec.yaml');
+            if (pubspec) {
+                const vm = pubspec.match(/^version:\s*([\d.]+)/m);
+                if (vm) version = vm[1];
+            }
         } else if (await checkFile('build.gradle') || await checkFile('build.gradle.kts') ||
             await checkFile('app/build.gradle') || await checkFile('app/build.gradle.kts') ||
             await checkFile('settings.gradle') || await checkFile('gradlew')) {
@@ -368,15 +408,34 @@ async function detectProjectTypeViaAPI(repoUrl, branch, token) {
                 }
             }
         }
+        if (!version && projectType === 'android') {
+            for (const gPath of ['app/build.gradle', 'app/build.gradle.kts', 'android/app/build.gradle', 'android/app/build.gradle.kts']) {
+                const content = await fetchFileContent(gPath);
+                if (content) {
+                    const vn = content.match(/versionName\s*[=(]?\s*(?:["']([^"']+)["']|(\d[\d.]*(?:-\w+)?))/);
+                    if (vn) { version = vn[1] || vn[2]; break; }
+                }
+            }
+            // Fallback: gradle.properties
+            if (!version) {
+                for (const pf of ['gradle.properties', 'app/gradle.properties', 'android/gradle.properties']) {
+                    const content = await fetchFileContent(pf);
+                    if (content) {
+                        const vn = content.match(/^versionName\s*=\s*(.+)$/m);
+                        if (vn) { version = vn[1].trim(); break; }
+                    }
+                }
+            }
+        }
     }
 
-    console.log(`[detect] ${repoFullName} — result: type=${projectType}, flavors=[${flavors.join(', ')}]`);
-    return { projectType, flavors };
+    console.log(`[detect] ${repoFullName} — result: type=${projectType}, version=${version}, flavors=[${flavors.join(', ')}]`);
+    return { projectType, flavors, version };
 }
 
-async function detectProjectType(repoUrl, branch) {
+async function detectProjectType(repoUrl, branch, fallbackToken = null) {
     // Extract token from URL if present
-    let token = null;
+    let token = fallbackToken;
     let cleanUrl = repoUrl;
     try {
         const u = new URL(repoUrl);
@@ -495,7 +554,7 @@ async function startBuild(job) {
     // If platform not specified, auto-detect
     if (!platform) {
         sendLog(`Đang phát hiện loại project...`, 'info');
-        const detected = await detectProjectType(repoUrl, branch);
+        const detected = await detectProjectType(repoUrl, branch, token);
         if (!detected.projectType) {
             sendLog(`Không thể phát hiện loại project, mặc định Android`, 'warn');
             platform = 'android';
@@ -504,10 +563,18 @@ async function startBuild(job) {
         }
     }
 
+    // Detect version from API
+    let appVersion = '';
+    try {
+        const detected = await detectProjectType(repoUrl, branch, token);
+        if (detected.version) appVersion = detected.version;
+    } catch(e) { console.log('Version detect failed:', e.message); }
+
     const buildTypeLabel = lane === 'bundle' ? 'AAB' : lane === 'release' ? 'APK' : lane ? lane.toUpperCase() : '';
     const platformEmoji = platform === 'android' ? '🤖' : '🍏';
+    const versionLine = appVersion ? `\n📦 <b>Version:</b> ${escapeHtml(appVersion)}` : '';
     notifyTelegram(
-        `🚀 <b>Bắt đầu Build!</b>\n\n📌 <b>Dự án:</b> ${escapeHtml(repoNameShort)}\n🌿 <b>Nhánh:</b> ${escapeHtml(branch || 'default')}\n${platformEmoji} <b>Platform:</b> ${escapeHtml((platform || 'auto').toUpperCase())}${buildTypeLabel ? ` (${escapeHtml(buildTypeLabel)})` : ''}${flavor ? `\n🎨 <b>Môi trường:</b> ${escapeHtml(flavor)}` : ''}`
+        `🚀 <b>Bắt đầu Build!</b>\n\n📌 <b>Dự án:</b> ${escapeHtml(repoNameShort)}\n🌿 <b>Nhánh:</b> ${escapeHtml(branch || 'default')}\n${platformEmoji} <b>Platform:</b> ${escapeHtml((platform || 'auto').toUpperCase())}${buildTypeLabel ? ` (${escapeHtml(buildTypeLabel)})` : ''}${versionLine}${flavor ? `\n🎨 <b>Môi trường:</b> ${escapeHtml(flavor)}` : ''}`
     );
 
     // Validate platform compatibility
@@ -725,18 +792,23 @@ async function startBuild(job) {
                         { file: path.join(tempDir, 'app', 'build.gradle'), type: 'gradle' },
                         { file: path.join(tempDir, 'android', 'app', 'build.gradle.kts'), type: 'gradle' },
                         { file: path.join(tempDir, 'android', 'app', 'build.gradle'), type: 'gradle' },
+                        { file: path.join(tempDir, 'gradle.properties'), type: 'props' },
+                        { file: path.join(tempDir, 'android', 'gradle.properties'), type: 'props' },
                     ];
                     for (const { file, type } of candidates) {
                         if (!fs.existsSync(file)) continue;
                         const content = fs.readFileSync(file, 'utf8');
                         if (type === 'flutter') {
-                            const m = content.match(/^version:\s*(\S+)/m);
-                            if (m) { versionInfo = m[1].split('+')[0]; break; }
-                        } else {
-                            // Groovy: versionName "x.x.x" hoặc versionName 'x.x.x'
+                            const m = content.match(/^version:\s*([\d.]+)/m);
+                            if (m) { versionInfo = m[1]; break; }
+                        } else if (type === 'gradle') {
+                            // Groovy: versionName "x.x.x" / versionName 'x.x.x' / versionName 1.0.0
                             // Kotlin DSL: versionName = "x.x.x" hoặc versionName("x.x.x")
-                            const vn = content.match(/versionName\s*[=(]?\s*["']([^"']+)["']/);
-                            if (vn) { versionInfo = vn[1]; break; }
+                            const vn = content.match(/versionName\s*[=(]?\s*(?:["']([^"']+)["']|(\d[\d.]*(?:-\w+)?))/);
+                            if (vn) { versionInfo = vn[1] || vn[2]; break; }
+                        } else if (type === 'props') {
+                            const vn = content.match(/^versionName\s*=\s*(.+)$/m);
+                            if (vn) { versionInfo = vn[1].trim(); break; }
                         }
                     }
                 } catch(e) { console.log('Version detection failed:', e.message); }

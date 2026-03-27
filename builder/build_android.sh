@@ -12,6 +12,13 @@ OUTPUT_DIR="${BUILDER_DIR}/completed_builds/$BUILD_ID"
 
 source "$(dirname "$0")/common.sh"
 
+cleanup_workdir() {
+    cd "$BUILDER_DIR" || true
+    cleanup_temp "$WORK_DIR"
+    echo "[CLEANUP] Removed temp source folder: $WORK_DIR"
+}
+trap cleanup_workdir EXIT
+
 echo "Starting Android Build..."
 echo "Build ID: $BUILD_ID"
 mkdir -p "$OUTPUT_DIR"

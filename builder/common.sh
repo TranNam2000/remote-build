@@ -621,10 +621,36 @@ collect_android_artifact() {
         artifact=$(find build/app/outputs -name "*.apk" -o -name "*.aab" 2>/dev/null | head -n 1)
     fi
     if [ -n "$artifact" ]; then
-        local filename
-        filename=$(basename "$artifact")
-        cp "$artifact" "$output_dir/$filename"
-        echo "Saved to $output_dir/$filename"
+        local ext version clean_version version_suffix output_name
+        ext=".${artifact##*.}"
+
+        # Detect version from common project files.
+        if [ -f "pubspec.yaml" ]; then
+            version=$(sed -nE 's/^version:[[:space:]]*([^[:space:]]+).*/\1/p' "pubspec.yaml" | head -n 1)
+        fi
+        if [ -z "$version" ]; then
+            for vf in "app/build.gradle.kts" "app/build.gradle" "android/app/build.gradle.kts" "android/app/build.gradle"; do
+                [ -f "$vf" ] || continue
+                version=$(sed -nE 's/.*versionName[[:space:]]*=?[[:space:]]*"([^"]+)".*/\1/p' "$vf" | head -n 1)
+                [ -n "$version" ] && break
+            done
+        fi
+
+        # Remove Flutter build metadata suffix, e.g. 1.2.3+45 -> 1.2.3
+        clean_version="${version%%+*}"
+        clean_version="$(echo -n "$clean_version" | tr -d '\r\n' | xargs)"
+        version_suffix=""
+        [ -n "$clean_version" ] && version_suffix="-v$clean_version"
+
+        if echo "$artifact" | grep -qi "debug"; then
+            output_name="app-debug${version_suffix}${ext}"
+        else
+            output_name="app-release${version_suffix}${ext}"
+        fi
+
+        cp "$artifact" "$output_dir/$output_name"
+        rm -f "$artifact"
+        echo "Saved to $output_dir/$output_name (version: ${clean_version:-${version:-unknown}})"
     else
         echo "Error: No build artifact found!"
         exit 1

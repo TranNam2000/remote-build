@@ -501,15 +501,36 @@ function Load-Env {
 
 # --- Detect project type ---
 function Detect-ProjectType {
+    Write-Host "[DEBUG] Detect-ProjectType running in: $(Get-Location)"
+    Write-Host "[DEBUG] pubspec.yaml exists: $(Test-Path 'pubspec.yaml')"
+    Write-Host "[DEBUG] build.gradle exists: $(Test-Path 'build.gradle')"
+    Write-Host "[DEBUG] android/build.gradle exists: $(Test-Path 'android\build.gradle')"
+
     if (Test-Path "pubspec.yaml") {
+        # Flutter project: has pubspec.yaml at root, android/ is a subdirectory
+        # gradlew is at android/gradlew, Fastlane runs from android/
         $global:ProjectType = "flutter"
     } elseif ((Test-Path "build.gradle") -or (Test-Path "build.gradle.kts") -or
               (Test-Path "app\build.gradle") -or (Test-Path "app\build.gradle.kts")) {
+        # Native Android: has build.gradle at root or app/build.gradle
+        # gradlew is at ./gradlew, Fastlane runs from ./
         $global:ProjectType = "native_android"
     } else {
         $global:ProjectType = "flutter"  # default
     }
     Write-Host "[INFO] Detected project type: $($global:ProjectType)"
+    Write-Host "[INFO] === PROJECT TYPE SUMMARY ==="
+    if ($global:ProjectType -eq "flutter") {
+        Write-Host "[INFO]   Build tool: flutter build apk/appbundle"
+        Write-Host "[INFO]   Fastlane dir: android/"
+        Write-Host "[INFO]   gradlew: android/gradlew"
+        Write-Host "[INFO]   gradle.properties: root + android/"
+    } else {
+        Write-Host "[INFO]   Build tool: gradle assembleRelease/bundleRelease"
+        Write-Host "[INFO]   Fastlane dir: ./"
+        Write-Host "[INFO]   gradlew: ./gradlew"
+        Write-Host "[INFO]   gradle.properties: root only"
+    }
 }
 
 # --- Flutter pub get + code generation ---
@@ -622,12 +643,20 @@ function Install-RequiredSdk {
 # --- Optimize gradle.properties ---
 function Optimize-Gradle {
     Write-Host "Optimizing gradle.properties..."
-    # Optimize BOTH root and android/ gradle.properties
+    Write-Host "[DEBUG] Optimize-Gradle running in: $(Get-Location) (ProjectType=$($global:ProjectType))"
+
+    # ── Xác định file gradle.properties cần optimize ──
+    # Flutter:        root/gradle.properties + android/gradle.properties
+    # Native Android: root/gradle.properties only
     $propsFiles = @()
-    if (Test-Path "gradle.properties") { $propsFiles += "gradle.properties" }
-    if ($global:ProjectType -ne "native_android") {
-        New-Item -ItemType Directory -Force -Path "android" | Out-Null
-        $propsFiles += "android\gradle.properties"
+    if ($global:ProjectType -eq "flutter") {
+        if (Test-Path "gradle.properties") { $propsFiles += "gradle.properties" }
+        if (Test-Path "android") {
+            $propsFiles += "android\gradle.properties"
+        }
+    } else {
+        # native_android: chỉ root
+        if (Test-Path "gradle.properties") { $propsFiles += "gradle.properties" }
     }
     # Replace existing Gradle tuning keys in-place (only change values, keep everything else)
     $keysToReplace = @{
@@ -733,6 +762,11 @@ function Optimize-Gradle {
         $sdkPath = $env:ANDROID_HOME -replace '\\', '/'
         function Update-LocalProperties([string]$filePath) {
             $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+            # Ensure parent directory exists before writing
+            $parentDir = Split-Path -Parent $filePath
+            if ($parentDir -and -not (Test-Path $parentDir)) {
+                New-Item -ItemType Directory -Force -Path $parentDir | Out-Null
+            }
             if (Test-Path $filePath) {
                 $lines = Get-Content $filePath
                 $found = $false
@@ -746,11 +780,17 @@ function Optimize-Gradle {
                 [System.IO.File]::WriteAllText($filePath, "sdk.dir=$sdkPath`n", $utf8NoBom)
             }
         }
-        Update-LocalProperties "local.properties"
-        if (Test-Path "android") {
-            Update-LocalProperties "android\local.properties"
+        # Flutter:        ghi android/local.properties (Gradle chạy từ android/)
+        # Native Android: ghi ./local.properties (Gradle chạy từ root)
+        if ($global:ProjectType -eq "flutter") {
+            if (Test-Path "android") {
+                Update-LocalProperties "android\local.properties"
+                Write-Host "[OK] android/local.properties: sdk.dir=$sdkPath"
+            }
+        } else {
+            Update-LocalProperties "local.properties"
+            Write-Host "[OK] local.properties: sdk.dir=$sdkPath"
         }
-        Write-Host "[OK] local.properties: sdk.dir=$sdkPath"
     }
 
     # --- Auto-inject common ProGuard/R8 dontwarn rules ---
@@ -838,17 +878,17 @@ function Setup-Fastfile {
                 "platform :android do",
                 "  desc `"Build release APK`"",
                 "  lane :release do",
-                "    sh(`"cd .. && $fb build apk --release${flavorFlag}`")",
+                "    sh(`"cd .. && $fb build apk --release --no-pub${flavorFlag}`")",
                 "  end",
                 "",
                 "  desc `"Build release AAB`"",
                 "  lane :bundle do",
-                "    sh(`"cd .. && $fb build appbundle --release${flavorFlag}`")",
+                "    sh(`"cd .. && $fb build appbundle --release --no-pub${flavorFlag}`")",
                 "  end",
                 "",
                 "  desc `"Build debug APK`"",
                 "  lane :debug do",
-                "    sh(`"cd .. && $fb build apk --debug`")",
+                "    sh(`"cd .. && $fb build apk --debug --no-pub`")",
                 "  end",
                 "end"
             ) -join "`n"
@@ -862,10 +902,14 @@ function Setup-Fastfile {
 function Run-Fastlane {
     param([string]$Platform, [string]$Lane = "release")
     Write-Host "==> STEP: Fastlane"
-    Write-Host "[RUN] Running Fastlane lane: $Lane for $Platform ($($global:ProjectType))..."
 
+    # Flutter:        Fastlane chạy từ android/, gradlew ở android/gradlew
+    # Native Android: Fastlane chạy từ ./, gradlew ở ./gradlew
     $runDir = $Platform
     if ($global:ProjectType -eq "native_android") { $runDir = "." }
+
+    Write-Host "[RUN] Running Fastlane lane: $Lane for $Platform ($($global:ProjectType))"
+    Write-Host "[RUN] Fastlane working dir: $(Resolve-Path $runDir)"
 
     Push-Location $runDir
     try {
@@ -888,6 +932,18 @@ function Run-Fastlane {
 function Build-Android {
     param([string]$Lane = "release")
     Write-Host "==> STEP: Build Android"
+    Write-Host "[INFO] ProjectType=$($global:ProjectType), pwd=$(Get-Location)"
+
+    # Flutter:        dùng sh("flutter build ...") → KHÔNG cần gradlew
+    # Native Android: dùng gradle() → CẦN gradlew
+    if ($global:ProjectType -ne "flutter") {
+        if (-not (Test-Path "gradlew") -and -not (Test-Path "gradlew.bat")) {
+            Write-Host "[ERROR] gradlew not found at project root. Native Android project requires gradlew wrapper."
+            Write-Host "[INFO] Please add gradlew to your repository: gradle wrapper"
+            throw "gradlew not found"
+        }
+        Write-Host "[OK] gradlew found"
+    }
 
     # Default: always use Fastlane
     Setup-Fastfile -Platform "android"
@@ -916,7 +972,6 @@ function Collect-AndroidArtifact {
             } | Select-Object -First 1
     }
     if ($artifact) {
-        Copy-Item $artifact.FullName "$OutputDir\$($artifact.Name)" -Force
         $ext = [System.IO.Path]::GetExtension($artifact.Name)
         # Detect version from build files
         $version = ""
@@ -929,10 +984,17 @@ function Collect-AndroidArtifact {
                 if ($vc -match 'versionName\s*=\s*"([^"]+)"') { $version = $Matches[1]; break }
             }
         }
-        $versionSuffix = if ($version) { "-v$version" } else { "" }
+        # Flutter pubspec version may contain build metadata (e.g. 1.2.3+45) — keep only semantic version for filename.
+        $cleanVersion = $version
+        if ($cleanVersion) {
+            $cleanVersion = ($cleanVersion -split '\+')[0]
+            $cleanVersion = $cleanVersion.Trim()
+        }
+        $versionSuffix = if ($cleanVersion) { "-v$cleanVersion" } else { "" }
         $outputName = if ($isDebug) { "app-debug$versionSuffix$ext" } else { "app-release$versionSuffix$ext" }
-        Copy-Item $artifact.FullName "$OutputDir\$outputName" -Force -ErrorAction SilentlyContinue
-        Write-Host "Saved to $OutputDir\$($artifact.Name) (version: $( if ($version) { $version } else { 'unknown' } ))"
+        Copy-Item $artifact.FullName "$OutputDir\$outputName" -Force
+        Remove-Item $artifact.FullName -Force -ErrorAction SilentlyContinue
+        Write-Host "Saved to $OutputDir\$outputName (version: $( if ($cleanVersion) { $cleanVersion } elseif ($version) { $version } else { 'unknown' } ))"
     } else {
         Write-Host "Error: No build artifact found!"
         exit 1

@@ -261,12 +261,12 @@ if "!NEED_GENERATE!"=="1" (
             echo platform :android do
             echo   desc "Build release APK"
             echo   lane :release do
-            echo     sh^("cd .. ^&^& flutter build apk --release"^)
+            echo     sh^("cd .. ^&^& flutter build apk --release --no-pub"^)
             echo   end
             echo.
             echo   desc "Build release AAB"
             echo   lane :bundle do
-            echo     sh^("cd .. ^&^& flutter build appbundle --release"^)
+            echo     sh^("cd .. ^&^& flutter build appbundle --release --no-pub"^)
             echo   end
             echo end
         ) > "!FL_DIR!\Fastfile"
